@@ -131,6 +131,7 @@ def flag():     # clock div= 4
     in_(isr, 8)                                     # put isr back at high bits to prepare for shift
     irq(4)                  # MIGHT NEED nowait                        # Let unstuffer know we finished
     word(0x20c9)                                    # 0010000011001001 = wait 1 prev irq 1 word equivalent because upython doesnt have next or prev 
+    # wait(1, irq, 9)
     in_(pins, 1)                                    # Grab the new bit
     in_(null, 24)                                   # move it to low byte (shift in 24 zeros)
     mov(y, isr)                                     # Grab the current shifted value
@@ -567,6 +568,11 @@ def setupPIO0():
 
 
 def setupPIO1():
+    PIO1_ADDRESS = 0x50300000
+    PIO_HARD_IRQ0 = 0x170  # IRQ0_INTE (Interrupt Enable for irq0)
+    PIO_HARD_IRQ1 = 0x17c  # IRQ1_INTE (Interrupt Enable for irq1)
+
+
     sm_flag = rp2.StateMachine(
         4,
         flag,
@@ -590,10 +596,13 @@ def setupPIO1():
     sm_unstuff.irq(handler=pio_irq_data)
     sm_flag.active(0)
     sm_unstuff.active(0)
+    mem32[PIO1_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
+    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<5)   # 
 
-    PIO1_ADDRESS = 0x50300000
-    mem32[PIO1_ADDRESS] = 0x03  # enable state machines
     sm_flag.put(0x0000007E)
+
+    mem32[PIO1_ADDRESS] = 0x03  # enable state machines
+    
     print("<setupPIO1> End")
 
 def setupPIO2():
@@ -635,5 +644,5 @@ def main():
         sleep_ms(1000)
        
 
-
-main()
+while True:     # pico runs automatically when powered
+    main()
