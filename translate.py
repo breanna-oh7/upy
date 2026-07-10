@@ -535,7 +535,7 @@ def setupPIO0():
     sm_rxclock = rp2.StateMachine(
         0, 
         rxclock, 
-        freq=19200, 
+        freq=19200, # 156 MHz / div = 8125
         in_base=pin_pinFromCPU, 
         sideset_base=pin_pinPLLAdd
     )
@@ -552,7 +552,7 @@ def setupPIO0():
     sm_txclock = rp2.StateMachine(
         2, 
         txclock, 
-        freq=19200, 
+        freq=19200,         # 156 MHz / div = 8125
         set_base=pin_cpu1_pin
     )
     sm_rxclock.active(0)
@@ -597,7 +597,7 @@ def setupPIO1():
     sm_flag.active(0)
     sm_unstuff.active(0)
     mem32[PIO1_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
-    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<5)   # 
+    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
 
     sm_flag.put(0x0000007E)
 
@@ -611,7 +611,7 @@ def setupPIO2():
     sm_wsled = rp2.StateMachine(
         8,
         wsled,
-        freq=8210526, # clock div 19
+        freq=8210526, # clock div 19, maybe round up if not working since its a decimal
         sideset_base=pin_pinWSLed
     )
 
@@ -622,11 +622,8 @@ def setupPIO2():
 #dobule check that that the definitions match the rp2
 
 def main():
-    
-    
 
-
-    machine.freq(156000000)
+    machine.freq(156000000) # in hertz
     uart = UART(1, baudrate = 9600, bits = 8, parity = None, stop = 1)
 
     setupPIO0()
