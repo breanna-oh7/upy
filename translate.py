@@ -51,7 +51,7 @@ def rxclock(): # clcokdiv 8125
 #   Side pins: 
 # ------------------------------------
 
-@rp2.asm_pio()
+@rp2.asm_pio(set_init=[rp2.PIO.OUT_LOW, rp2.PIO.OUT_LOW])
 def txclock(): # clcokdiv 8125
     wrap_target()
 
@@ -75,7 +75,7 @@ def txclock(): # clcokdiv 8125
 #          pin 0 = high during wait, low when running
 # ------------------------------------
 
-@rp2.asm_pio(sideset_init=rp2.PIO.OUT_LOW)
+@rp2.asm_pio(sideset_init=rp2.PIO.OUT_LOW, set_init=rp2.PIO.OUT_LOW)
 def nrzi():# clock div 4 
     jmp("waiti")
 
@@ -445,15 +445,17 @@ packetlen = 0
 packet = bytearray(1024)
 
 leds = [LEDOFF, LEDOFF, LEDOFF] 
+sm_unstuff = None
+sm_flag = None
 
-def pio_irq_flag(sm):
+def pio_irq_flag():
     global flagcount, pio1unknownIRQ0, packetlen, leds
     
     pio_interrupt = mem32[PIO1_BASE + PIO_IRQ_OFFSET]
     
     if pio_interrupt & (1 << 3):       
         flagcount += 1   
-        mem32[PIO1_BASE + PIO_IRQ_OFFSET] = (1 << 3)
+        mem32[PIO1_BASE + PIO_IRQ_OFFSET] = (1 << 3)  # clear
         
         if packetlen > 0:
             with sLock:     # have to lock leds bc its a shared resource
@@ -462,7 +464,7 @@ def pio_irq_flag(sm):
                 else:
                     leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
                 
-                # REPLACED MATCH-CASE WITH IF-ELIF-ELSE
+                # cant do case; have to do if-elif-else
                 cmd = packet[0]
                 if cmd == 0x27:
                     leds[1] = LEDMAGENTA
@@ -483,48 +485,29 @@ def pio_irq_flag(sm):
 
     print("<setupFlag data> End")
 
-# def pio_irq_flag(sm):
-#     global flagcount, packetlen, leds, packet
-
-#     flagcount += 1   
-    
-#     if packetlen > 0:
-#         if packetlen > 2:
-#             leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
-#         else:
-#             leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
-
-#         for i in range(packetlen):
-#             print("{:02X} ".format(packet[i]), end="")
-
-#         match packet[0]:
-#             case 0x27:
-#                 leds[1] = LEDMAGENTA
-#             case 0x9A: 
-#                 leds[1] = 0x00FF0000  
-#             case _:
-#                 leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
-        
-#         print() 
-        
-#     packetlen = 0 
-
 # --------------------------------------------------------
 # Data IRQ handler
 # --------------------------------------------------------
-def pio_irq_data(sm):
-    global datacount, packetlen, packet
+def pio_irq_data():
+    global datacount, packetlen, packet, sm_unstuff
     # byte = sm.rx_fifo()
 
-    while sm.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
+    while sm_unstuff.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
     # for _ in range(byte):
-        data = sm.get()
+        data = sm_unstuff.get()
         if packetlen < 1024:
             packet[packetlen] = (data >> 24) & 0xFF             # packet[packetlen++] = data >> 24;
             packetlen += 1
         datacount += 1
     
     print("<setupPIRQ data> End")
+# data irq handler has error for rx_fifo() and get() can't access atribute for class None. Is this because the state machiens weren't instantiated yet? 
+def pio1_irq_handler(pio):
+    flags = pio.irq().flags()
+    if flags & (1 << 11):
+        pio_irq_flag()
+    if flags & (1 << 1):
+        pio_irq_data()
 
 # -----------------------------------------------------
 # PIO 0 Setup for RX Clock and NRZI (and TX clock)
@@ -568,6 +551,8 @@ def setupPIO0():
 
 
 def setupPIO1():
+    global sm_flag, sm_unstuff
+    
     PIO1_ADDRESS = 0x50300000
     PIO_HARD_IRQ0 = 0x170  # IRQ0_INTE (Interrupt Enable for irq0)
     PIO_HARD_IRQ1 = 0x17c  # IRQ1_INTE (Interrupt Enable for irq1)
@@ -593,11 +578,15 @@ def setupPIO1():
         out_base = pin_pinData
     )
     # IRQ handler 
-    sm_unstuff.irq(handler=pio_irq_data)
+    
     sm_flag.active(0)
     sm_unstuff.active(0)
+
     mem32[PIO1_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
     mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
+    
+    pio1 = rp2.PIO(1)
+    pio1.irq(pio1_irq_handler)
 
     sm_flag.put(0x0000007E)
 
