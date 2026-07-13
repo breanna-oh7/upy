@@ -202,8 +202,9 @@ def flag():     # clock div= 4
 
     in_(isr, 8)                                     # put isr back at high bits to prepare for shift
     irq(4)                  # MIGHT NEED nowait                        # Let unstuffer know we finished
-    word(0x20c9)                                    # 0010000011001001 = wait 1 prev irq 1 word equivalent because upython doesnt have next or prev 
-    # wait(1, irq, 9)
+    # wait(1, irq, 9)       # word(0x20c9)                                    # 0010000011001001 = wait 1 prev irq 1 word equivalent because upython doesnt have next or prev 
+    wait (1, irq, 25 )      # 001 00000 1 10 11001 = waiting for next, so next would be PIO 0 
+   
     in_(pins, 1)                                    # Grab the new bit
     in_(null, 24)                                   # move it to low byte (shift in 24 zeros)
     mov(y, isr)                                     # Grab the current shifted value
@@ -340,8 +341,6 @@ pin_pinData       = Pin(pinData, Pin.OUT)
 # */
 
 NUMLEDS = 3
-PIO1_BASE       = 0x50300000            # address for PIO1 
-PIO_IRQ_OFFSET  = 0x030
 
 LED_NORMAL    =     0x00000000
 LED_ONOFF     =     0x80000000
@@ -448,7 +447,19 @@ packetlen = 0
 packet = bytearray(1024)
 
 leds = [LEDOFF, LEDOFF, LEDOFF] 
+# globals
+PIO0_ADDRESS = 0x50200000              # base address of PIO0
+PIO1_ADDRESS       = 0x50300000            # address for PIO1 
 PIO2_ADDRESS = 0x50400000
+PIO_IRQ_OFFSET  = 0x030                 # regular irq offset
+PIO_IRQ_INTE = 0x168                    # irq enable
+PIO1_IRQ_0 = 17                         # what numebr the irq is(page 84)
+PIO1_IRQ_1 = 18
+
+PIO_HARD_IRQ0 = 0x170  # IRQ0_INTE (Interrupt Enable for irq0)
+PIO_HARD_IRQ1 = 0x17c  # IRQ1_INTE (Interrupt Enable for irq1)
+NVIC_ISER0 = 0xE000E100 # NVIC ISER0 
+
 def pio_irq_flag(sm):   # note this is for pio block 2 now 
     global flagcount, pio1unknownIRQ0, packetlen, leds
     
@@ -537,7 +548,6 @@ def setupPIO0():
     sm_txclock.active(0)
 
     ## pio_enable_sm_mask_in_sync(pio, 0x07) -> syncs the state machine clocks and starts them all at the same time 
-    PIO0_ADDRESS = 0x50200000              # base address of PIO0
     # OFFSET = 0x000                      # 0x07 = 0111 = state machines 0, 1, 2 
     mem32[PIO0_ADDRESS] = 0x07    # mem32 enables the the state machines 
 
@@ -545,10 +555,6 @@ def setupPIO0():
 
 
 def setupPIO1():
-    PIO1_ADDRESS = 0x50300000
-   
-    PIO_HARD_IRQ1 = 0x17c  # IRQ1_INTE (Interrupt Enable for irq1)
-
     sm_unstuff = rp2.StateMachine(
         5,
         receiveData,
@@ -563,16 +569,11 @@ def setupPIO1():
     sm_unstuff.active(0)
 
     mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
-
-   
-
     mem32[PIO1_ADDRESS] = 0x03  # enable state machines
     
     print("<setupPIO1> End")
 
-def setupPIO2():
-
-    PIO_HARD_IRQ0 = 0x170  # IRQ0_INTE (Interrupt Enable for irq0)  
+def setupPIO2(): 
     global sm_wsled
     pin_pinWSLed = Pin(pinWSLed, Pin.OUT)
     sm_wsled = rp2.StateMachine(
