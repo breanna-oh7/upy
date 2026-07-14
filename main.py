@@ -445,37 +445,49 @@ PIO1_ADDRESS       = 0x50300000         # address for PIO1
 PIO2_ADDRESS = 0x50400000
 PIO_IRQ_OFFSET  = 0x030                 # regular irq offset
 PIO_IRQ_INTE = 0x168                    # irq enable
-PIO1_IRQ_0 = 17                         # what numebr the irq is(page 84)
-PIO1_IRQ_1 = 18
+
+# Page 84 - Interrupts
+# PIO0_IRQ_0 = 15                        
+# PIO0_IRQ_1 = 16
+PIO1_IRQ_0 = 17
+# PIO1_IRQ_1 = 18
+PIO2_IRQ_0 = 19
+# PIO2_IRQ_1 = 20
 
 PIO_HARD_IRQ0 = 0x170                   # IRQ0_INTE (Interrupt Enable for irq0)
 PIO_HARD_IRQ1 = 0x17c                   # IRQ1_INTE (Interrupt Enable for irq1)
 NVIC_ISER0 = 0xE000E100                 # NVIC ISER0 
 NVIC_ISER1 = 0x0e104
+FSTAT = 0x004           # page 947
 
 packet_ready = False
+global_unstuff = None
+global_flag = None
 
 # --------------------------------------------------------
-# Data IRQ handler
+# Data IRQ handler      (PIO1)
 # --------------------------------------------------------
 def pio_irq_data(sm):
-    global datacount, packetlen, packet
+    global datacount, packetlen, packet, packet_ready, global_unstuff
     # byte = sm.rx_fifo()
 
-    while sm.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
+    # while global_unstuff.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
     # for _ in range(byte):
-        data = sm.get()
+    while not (mem32[PIO1_ADDRESS + FSTAT] & (1 << 9)):
+        data = global_unstuff.get()
         if packetlen < 1024 and not packet_ready:
             packet[packetlen] = (data >> 24) & 0xFF             # packet[packetlen++] = data >> 24;
             packetlen += 1
         datacount += 1
+
+    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] = 0xFF     # clear irq offset MIGHT CHECK; this is 
     
 # --------------------------------------------------------
-# FLAG IRQ handler
+# FLAG IRQ handler      (PIO2)
 # --------------------------------------------------------
 
 def pio_irq_flag(sm):   # note this is for pio block 2 now 
-    global flagcount, pio1unknownIRQ0, packetlen, leds, packet_ready
+    global flagcount, pio1unknownIRQ0, packetlen, leds, packet_ready, global_flag
     
     pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]
     
@@ -583,9 +595,9 @@ def quick_pin14_check():
    
     return edges > 0
 
-
-
 def setupPIO1():
+    global global_unstuff
+
     sm_unstuff = rp2.StateMachine(
         5,
         receiveData,
@@ -595,18 +607,23 @@ def setupPIO1():
         jmp_pin = pin_pinFlag,
         out_base = pin_pinData
     )
+    global_unstuff = sm_unstuff
+
     # IRQ handler 
-    sm_unstuff.irq(handler=pio_irq_data)
-    sm_unstuff.active(0)
+    sm_unstuff.irq(handler=pio_irq_data, hard = True)
+    sm_unstuff.active(1)
 
     mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
-    mem32[PIO1_ADDRESS] = 0x03  # enable state machines
-    
+    # mem32[PIO1_ADDRESS] = 0x03  # enable state machines
+   
+    # mem32[NVIC_ISER0] = (1 << PIO1_IRQ_1)
     print("<setupPIO1> End")
 
 def setupPIO2(): 
-    global sm_wsled
+    global sm_wsled, global_flag
+
     pin_pinWSLed = Pin(pinWSLed, Pin.OUT)
+
     sm_wsled = rp2.StateMachine(
         8,
         wsled,
@@ -621,24 +638,28 @@ def setupPIO2():
         in_base = pin_nrzi_pin,
         sideset_base = pin_pinFlag
     )
+    global_flag = sm_flag
 
       # IRQ handler
-    sm_flag.irq(handler=pio_irq_flag)
-    sm_flag.active(0)
+    sm_flag.irq(handler=pio_irq_flag, hard = True)
+    sm_flag.active(1)
     sm_wsled.active(1)
 
     sm_flag.put(0x0000007E)
     mem32[PIO2_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
 
+
+    # mem32[NVIC_ISER0] = (1 << PIO2_IRQ_0)
+
     print("<setupPIO2> End")
 
 #dobule check that that the definitions match the rp2
-
+from time import ticks_ms, ticks_diff
 def main():
-    global packet_ready
+    global packet_ready, flagcount, datacount, pio1unknownIRQ0, packetlen
     machine.freq(156000000) # in hertz
     uart = UART(1, baudrate = 9600, bits = 8, parity = None, stop = 1)
-    # quick_pin14_check()
+    quick_pin14_check()
     setupPIO0()
     setupPIO1()
     setupPIO2()
@@ -666,12 +687,18 @@ def main():
                 else:
                     leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
 
-            for i in range(packetlen):              # printing out the data
+            for i in range(packetlen):              # printing out the data; have to print here because it doens't like print statements in locks or smth
                 print("{:02X} ".format(packet[i]), end="")
             print()
             
             packetlen = 0           # clear packet len           
             packet_ready = False
+            now = ticks_ms()
+            if ticks_diff(now, last_print) > 1000:
+                print("flag:", flagcount, "data:", datacount,
+                    "unk:", pio1unknownIRQ0, "len:", packetlen)
+                last_print = now
+            sleep_ms(100)
 
         sleep_ms(100)
             
