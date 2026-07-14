@@ -340,6 +340,9 @@ pin_pinData       = Pin(pinData, Pin.OUT)
   
 # */
 
+# --------------------------------------------------------
+# LED API AND GLOBALS
+# --------------------------------------------------------
 NUMLEDS = 3
 
 LED_NORMAL    =     0x00000000
@@ -426,19 +429,9 @@ def put_pixel(pixel_grb):
     global sm_wsled
     sm_wsled.put((pixel_grb << 8) & 0xFFFFFFFF)
 
-
-# def UpdateLeds():
-#     global leds
-#     for i in range(NUMLEDS):
-#         put_pixel(leds[i])
-
-# ------------------------------------
-# 
-#  
-#  Flag IRQ Handler
-#  
-#         
-# ------------------------------------
+# --------------------------------------------------------
+# PIOS
+# --------------------------------------------------------
 
 flagcount = 0
 datacount = 0
@@ -448,54 +441,19 @@ packet = bytearray(1024)
 
 leds = [LEDOFF, LEDOFF, LEDOFF] 
 # globals
-PIO0_ADDRESS = 0x50200000              # base address of PIO0
-PIO1_ADDRESS       = 0x50300000            # address for PIO1 
+PIO0_ADDRESS = 0x50200000               # base address of PIO0
+PIO1_ADDRESS       = 0x50300000         # address for PIO1 
 PIO2_ADDRESS = 0x50400000
 PIO_IRQ_OFFSET  = 0x030                 # regular irq offset
 PIO_IRQ_INTE = 0x168                    # irq enable
 PIO1_IRQ_0 = 17                         # what numebr the irq is(page 84)
 PIO1_IRQ_1 = 18
 
-PIO_HARD_IRQ0 = 0x170  # IRQ0_INTE (Interrupt Enable for irq0)
-PIO_HARD_IRQ1 = 0x17c  # IRQ1_INTE (Interrupt Enable for irq1)
-NVIC_ISER0 = 0xE000E100 # NVIC ISER0 
+PIO_HARD_IRQ0 = 0x170                   # IRQ0_INTE (Interrupt Enable for irq0)
+PIO_HARD_IRQ1 = 0x17c                   # IRQ1_INTE (Interrupt Enable for irq1)
+NVIC_ISER0 = 0xE000E100                 # NVIC ISER0 
 
-def pio_irq_flag(sm):   # note this is for pio block 2 now 
-    global flagcount, pio1unknownIRQ0, packetlen, leds
-    
-    pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]
-    
-    if pio_interrupt & (1 << 3):       
-        flagcount += 1   
-        mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET] = (1 << 3)  # clear
-        
-        if packetlen > 0:
-            with sLock:     # have to lock leds bc its a shared resource
-                if packetlen > 2:
-                    leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
-                else:
-                    leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
-                
-                # cant do case; have to do if-elif-else
-                cmd = packet[0]
-                if cmd == 0x27:
-                    leds[1] = LEDMAGENTA
-                elif cmd == 0x9A: 
-                    leds[1] = 0x00FF0000  
-                else:
-                    leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
-
-            for i in range(packetlen):
-                print("{:02X} ".format(packet[i]), end="")
-
-            print() 
-            
-        packetlen = 0            
-    else:
-        pio1unknownIRQ0 += 1
-    
-
-    print("<setupFlag data> End")
+packet_ready = False
 
 # --------------------------------------------------------
 # Data IRQ handler
@@ -507,12 +465,30 @@ def pio_irq_data(sm):
     while sm.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
     # for _ in range(byte):
         data = sm.get()
-        if packetlen < 1024:
+        if packetlen < 1024 and not packet_ready:
             packet[packetlen] = (data >> 24) & 0xFF             # packet[packetlen++] = data >> 24;
             packetlen += 1
         datacount += 1
     
-    print("<setupPIRQ data> End")
+# --------------------------------------------------------
+# FLAG IRQ handler
+# --------------------------------------------------------
+
+def pio_irq_flag(sm):   # note this is for pio block 2 now 
+    global flagcount, pio1unknownIRQ0, packetlen, leds, packet_ready
+    
+    pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]
+    
+    if pio_interrupt & (1 << 3):       
+        flagcount += 1   
+        mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET] = (1 << 3)  # clear
+        # removed the print statements because the slock doesnt like print statements 
+        if packetlen > 0:
+            packet_ready = True
+          
+    else:
+        pio1unknownIRQ0 += 1
+    
 
 # -----------------------------------------------------
 # PIO 0 Setup for RX Clock and NRZI (and TX clock)
@@ -620,8 +596,30 @@ def main():
     _thread.start_new_thread(Led_Service, ())   # running the Led_Service function in the second core
 
     while True:
-        sleep_ms(1000)
-       
+        if packet_ready: # if the IRQ  signaled that packet is ready
+            with sLock:  # have to lock leds variable bc its a shared resource
+                if packetlen > 2:
+                    leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
+                else:
+                    leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
+                
+                cmd = packet[0]
+                if cmd == 0x27:     # cant do case; have to do if-elif-else
+                    leds[1] = LEDMAGENTA
+                elif cmd == 0x9A: 
+                    leds[1] = 0x00FF0000  
+                else:
+                    leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
+
+            for i in range(packetlen):              # printing out the data
+                print("{:02X} ".format(packet[i]), end="")
+            print()
+            
+            packetlen = 0           # clear packet len           
+            packet_ready = False
+
+        sleep_ms(100)
+            
 
 while True:     # pico runs automatically when powered
     main()
