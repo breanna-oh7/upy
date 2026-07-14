@@ -303,16 +303,15 @@ pin28           =     28
 
 
 pin_pinFromCPU    = Pin(pinFromCPU, Pin.IN, Pin.PULL_UP) 
-pin_pinPLLAdd     = Pin(pinPLLAdd, Pin.OUT)
-pin_pll_sub_pin   = Pin(pinPLLSub, Pin.OUT)       
-pin_sample_pin    = Pin(pinSampleCLK, Pin.OUT)
-pin_nrzi_pin      = Pin(pinNRZIdecode, Pin.OUT)
-pin_cpu1_pin      = Pin(pinToCPU1, Pin.OUT)
-pin_cpu2_pin      = Pin(pinToCPU2, Pin.OUT)
-pin_pinNRZIdecode = Pin(pinNRZIdecode, Pin.IN)
-pin_pinFlag       = Pin(pinFlag, Pin.OUT)
-pin_pinClk        = Pin(pinClk, Pin.OUT)
-pin_pinData       = Pin(pinData, Pin.OUT)
+pin_pinPLLAdd     = Pin(pinPLLAdd)
+pin_pll_sub_pin   = Pin(pinPLLSub)       
+pin_sample_pin    = Pin(pinSampleCLK)
+pin_nrzi_pin      = Pin(pinNRZIdecode)
+pin_cpu1_pin      = Pin(pinToCPU1)
+pin_cpu2_pin      = Pin(pinToCPU2)
+pin_pinFlag       = Pin(pinFlag)
+pin_pinClk        = Pin(pinClk)
+pin_pinData       = Pin(pinData)
 #-------------------------------------------------------
 #       WS LED
 #-------------------------------------------------------
@@ -452,6 +451,7 @@ PIO1_IRQ_1 = 18
 PIO_HARD_IRQ0 = 0x170                   # IRQ0_INTE (Interrupt Enable for irq0)
 PIO_HARD_IRQ1 = 0x17c                   # IRQ1_INTE (Interrupt Enable for irq1)
 NVIC_ISER0 = 0xE000E100                 # NVIC ISER0 
+NVIC_ISER1 = 0x0e104
 
 packet_ready = False
 
@@ -529,13 +529,68 @@ def setupPIO0():
 
     print("<setupPIO0> End")
 
+def quick_pin14_check():
+
+    test_pin = Pin(pinFromCPU, Pin.IN, Pin.PULL_UP)
+    samples = []
+    edges = 0
+   
+    print(f"Sampling pin {pinFromCPU}...")
+   
+    # Sample rapidly and store all bits
+    for _ in range(1000):  # 100k samples
+        curr = test_pin.value()
+        samples.append(curr)
+        sleep_ms(5)
+        if len(samples) > 1 and curr != samples[-2]:
+            edges += 1
+   
+    # Print summary first
+    print(f"\nCollected {len(samples)} samples")
+   
+    if edges > 0:
+        print(f"ACTIVE ({edges} edges detected)")
+    else:
+        print(f"NO ACTIVITY (stuck at {'HIGH' if samples[0] else 'LOW'})")
+   
+    # Print statistics
+    ones = samples.count(1)
+    zeros = samples.count(0)
+    print(f"High (1): {ones} ({100*ones/len(samples):.1f}%)")
+    print(f"Low (0): {zeros} ({100*zeros/len(samples):.1f}%)")
+   
+    # Print all bits in groups of 80 per line
+    print("\n" + "="*60)
+    print("BIT CAPTURE:")
+    print("="*60)
+   
+    bits_per_line = 80
+    for i in range(0, len(samples), bits_per_line):
+        # Print line number
+        print(f"{i:6d}: ", end="")
+       
+        # Print 80 bits
+        line = samples[i:i+bits_per_line]
+        print(''.join(str(b) for b in line))
+       
+        # Pause every 20 lines so you can see the output
+        if (i // bits_per_line + 1) % 20 == 0:
+            print(f"--- {i + bits_per_line} samples shown, pausing ---")
+            sleep_ms(100)
+   
+    print("="*60)
+    print("END OF CAPTURE\n")
+   
+    return edges > 0
+
+
 
 def setupPIO1():
     sm_unstuff = rp2.StateMachine(
         5,
         receiveData,
         freq = 39000000,
-        in_base = pin_pinNRZIdecode,
+        in_base = pin_nrzi_pin,
         sideset_base = pin_pinClk,
         jmp_pin = pin_pinFlag,
         out_base = pin_pinData
@@ -563,7 +618,7 @@ def setupPIO2():
         9,
         flag,
         freq = 39000000,
-        in_base = pin_pinNRZIdecode,
+        in_base = pin_nrzi_pin,
         sideset_base = pin_pinFlag
     )
 
@@ -580,10 +635,10 @@ def setupPIO2():
 #dobule check that that the definitions match the rp2
 
 def main():
-
+    global packet_ready
     machine.freq(156000000) # in hertz
     uart = UART(1, baudrate = 9600, bits = 8, parity = None, stop = 1)
-
+    # quick_pin14_check()
     setupPIO0()
     setupPIO1()
     setupPIO2()
