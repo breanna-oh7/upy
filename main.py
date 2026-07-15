@@ -5,7 +5,7 @@ import _thread
 from machine import Pin, mem32
 import machine
 import rp2
-from time import sleep_ms, sleep
+from time import sleep_ms, sleep, ticks_us, ticks_diff
 
 # ------------------------------------
 #
@@ -130,7 +130,9 @@ def receiveData():
     set(x, 4)                       .side(0)       #  wait for 5 ones in a row
 
     label("next1")
-    wait(1, irq, 4)                 .side(0)[7]    # Wait for flag detector to be done, wait for input to be stable
+    wait(1, irq, 28)                 .side(0)[7]    # Wait for flag detector to be done, wait for input to be stable
+    # waits for flag deteector irq, which is in the next block = wait 1 irq next 4 
+    # # 001 00000 1 10 11100 = 
     jmp(pin, "resetall")            .side(0)       # check if flag pin is set -------- have to set pin when initializing sm
     mov(y, pins)                    .side(0)       # grab the input data
     # mov(pins, y)                    .side(0)       # set the data output to the input
@@ -141,7 +143,9 @@ def receiveData():
     jmp(x_dec, "next1")             .side(1)       # clock out the data but next bit might need to be skipped
 
     label("ones5")
-    wait(1, irq, 4)                 .side(0)[7]    # Wait for flag detector to be done
+    wait(1, irq, 28)                 .side(0)[7]    # Wait for flag detector to be done
+    # waits for flag deteector irq, which is in the next block = wait 1 irq next 4 
+    # # 001 00000 1 10 11100 = 
     jmp(pin, "resetall")            .side(0)       # check if flag pin is set
     mov(y, pins)                    .side(0)       # get input
     # mov(pins, y)                    .side(0)       # put on data line but not clock line
@@ -182,7 +186,7 @@ def wsled():
 
 
 # ------------------------------------
-# Wait for Interrupt 1 from previous PIO to signal time to sample
+# Wait for Interrupt 1 from PIO 0 (next PIO relative to PIO2) to signal time to sample
 #   set IRQ 3 when flag is detected
 #   In Pins: NRZI decoded data pin
 #   Out Pins: n/a
@@ -249,7 +253,7 @@ def flag():     # clock div= 4
 #     irq 0
 #     irq 1
 #     irq 2  
-#     irq 3  flag detected
+#     irq 3  
 #     irq 4  
 #     irq 5  
 #     irq 6
@@ -264,9 +268,9 @@ def flag():     # clock div= 4
 #     sm 3
 #     irq 0
 #     irq 1
-#     irq 2 flag detector output ready for unstuff
-#     irq 3
-#     irq 4
+#     irq 2 
+#     irq 3 flag detected
+#     irq 4 flag detector output ready for unstuff
 #     irq 5
 #     irq 6
 #     irq 7
@@ -460,43 +464,37 @@ NVIC_ISER0 = 0xE000E100                 # NVIC ISER0
 NVIC_ISER1 = 0x0e104
 FSTAT = 0x004           # page 947
 
-packet_ready = False
-global_unstuff = None
-global_flag = None
 
 # --------------------------------------------------------
 # Data IRQ handler      (PIO1)
 # --------------------------------------------------------
 def pio_irq_data(sm):
-    global datacount, packetlen, packet, packet_ready, global_unstuff
+    global datacount, packetlen, packet
     # byte = sm.rx_fifo()
 
-    # while global_unstuff.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
+    while sm.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
     # for _ in range(byte):
-    while not (mem32[PIO1_ADDRESS + FSTAT] & (1 << 9)):
-        data = global_unstuff.get()
-        if packetlen < 1024 and not packet_ready:
+        data = sm.get()
+        if packetlen < 1024:
             packet[packetlen] = (data >> 24) & 0xFF             # packet[packetlen++] = data >> 24;
             packetlen += 1
         datacount += 1
 
-    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] = 0xFF     # clear irq offset MIGHT CHECK; this is 
+    # mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] = 0xFF     # clear irq offset MIGHT CHECK; this is 
     
 # --------------------------------------------------------
 # FLAG IRQ handler      (PIO2)
 # --------------------------------------------------------
 
 def pio_irq_flag(sm):   # note this is for pio block 2 now 
-    global flagcount, pio1unknownIRQ0, packetlen, leds, packet_ready, global_flag
+    global flagcount, pio1unknownIRQ0, packetlen, leds
     
-    pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]
+    pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]    # get irq
     
     if pio_interrupt & (1 << 3):       
         flagcount += 1   
         mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET] = (1 << 3)  # clear
         # removed the print statements because the slock doesnt like print statements 
-        if packetlen > 0:
-            packet_ready = True
           
     else:
         pio1unknownIRQ0 += 1
@@ -546,16 +544,26 @@ def quick_pin14_check():
     test_pin = Pin(pinFromCPU, Pin.IN, Pin.PULL_UP)
     samples = []
     edges = 0
-   
-    print(f"Sampling pin {pinFromCPU}...")
-   
-    # Sample rapidly and store all bits
-    for _ in range(1000):  # 100k samples
+
+    sample_rate_hz = 19200  # matches the PIO RX/TX clock setup
+    sample_count = 1000
+    sample_period_us = int(1000000 / sample_rate_hz)
+
+    print(f"Sampling pin {pinFromCPU} at {sample_rate_hz} Hz...")
+
+    next_sample_time = ticks_us()
+
+    # Sample at the expected bit timing rather than using a fixed delay
+    for _ in range(sample_count):
+        while ticks_diff(ticks_us(), next_sample_time) < 0:
+            pass
+
         curr = test_pin.value()
         samples.append(curr)
-        sleep_ms(5)
         if len(samples) > 1 and curr != samples[-2]:
             edges += 1
+
+        next_sample_time += sample_period_us
    
     # Print summary first
     print(f"\nCollected {len(samples)} samples")
@@ -596,8 +604,6 @@ def quick_pin14_check():
     return edges > 0
 
 def setupPIO1():
-    global global_unstuff
-
     sm_unstuff = rp2.StateMachine(
         5,
         receiveData,
@@ -607,21 +613,21 @@ def setupPIO1():
         jmp_pin = pin_pinFlag,
         out_base = pin_pinData
     )
-    global_unstuff = sm_unstuff
 
     # IRQ handler 
     sm_unstuff.irq(handler=pio_irq_data, hard = True)
+    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
+
     sm_unstuff.active(1)
 
-    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
+    
     # mem32[PIO1_ADDRESS] = 0x03  # enable state machines
    
     # mem32[NVIC_ISER0] = (1 << PIO1_IRQ_1)
     print("<setupPIO1> End")
 
 def setupPIO2(): 
-    global sm_wsled, global_flag
-
+    global sm_wsled
     pin_pinWSLed = Pin(pinWSLed, Pin.OUT)
 
     sm_wsled = rp2.StateMachine(
@@ -638,16 +644,14 @@ def setupPIO2():
         in_base = pin_nrzi_pin,
         sideset_base = pin_pinFlag
     )
-    global_flag = sm_flag
 
       # IRQ handler
     sm_flag.irq(handler=pio_irq_flag, hard = True)
-    sm_flag.active(1)
-    sm_wsled.active(1)
-
     sm_flag.put(0x0000007E)
     mem32[PIO2_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
 
+    sm_flag.active(1)
+    sm_wsled.active(1)
 
     # mem32[NVIC_ISER0] = (1 << PIO2_IRQ_0)
 
@@ -656,10 +660,10 @@ def setupPIO2():
 #dobule check that that the definitions match the rp2
 from time import ticks_ms, ticks_diff
 def main():
-    global packet_ready, flagcount, datacount, pio1unknownIRQ0, packetlen
+    global flagcount, datacount, pio1unknownIRQ0, packetlen
     machine.freq(156000000) # in hertz
     uart = UART(1, baudrate = 9600, bits = 8, parity = None, stop = 1)
-    quick_pin14_check()
+    # quick_pin14_check()     # outputs the pin data coming from bench cpu; doesnt actually read at the exact frequency however
     setupPIO0()
     setupPIO1()
     setupPIO2()
@@ -672,36 +676,34 @@ def main():
     _thread.start_new_thread(Led_Service, ())   # running the Led_Service function in the second core
 
     while True:
-        if packet_ready: # if the IRQ  signaled that packet is ready
-            with sLock:  # have to lock leds variable bc its a shared resource
-                if packetlen > 2:
-                    leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
-                else:
-                    leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
-                
-                cmd = packet[0]
-                if cmd == 0x27:     # cant do case; have to do if-elif-else
-                    leds[1] = LEDMAGENTA
-                elif cmd == 0x9A: 
-                    leds[1] = 0x00FF0000  
-                else:
-                    leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
-
-            for i in range(packetlen):              # printing out the data; have to print here because it doens't like print statements in locks or smth
-                print("{:02X} ".format(packet[i]), end="")
-            print()
+        
+        with sLock:  # have to lock leds variable bc its a shared resource
+            if packetlen > 2:
+                leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
+            else:
+                leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
             
-            packetlen = 0           # clear packet len           
-            packet_ready = False
-            now = ticks_ms()
-            if ticks_diff(now, last_print) > 1000:
-                print("flag:", flagcount, "data:", datacount,
-                    "unk:", pio1unknownIRQ0, "len:", packetlen)
-                last_print = now
-            sleep_ms(100)
+            cmd = packet[0]
+            if cmd == 0x27:     # cant do case; have to do if-elif-else
+                leds[1] = LEDMAGENTA
+            elif cmd == 0x9A: 
+                leds[1] = 0x00FF0000  
+            else:
+                leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
 
+        for i in range(packetlen):              # printing out the data; have to print here because it doens't like print statements in locks or smth
+            print("{:02X} ".format(packet[i]), end="")
+        
+        packetlen = 0           # clear packt len           
+        
+        # now = ticks_ms()
+        # if ticks_diff(now, last_print) > 1000:
+        #     print("flag:", flagcount, "data:", datacount,
+        #         "unk:", pio1unknownIRQ0, "len:", packetlen)
+        #     last_print = now
+            
         sleep_ms(100)
-            
+
 
 while True:     # pico runs automatically when powered
     main()
