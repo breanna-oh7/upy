@@ -489,11 +489,12 @@ def pio_irq_data(sm):
 def pio_irq_flag(sm):   # note this is for pio block 2 now 
     global flagcount, pio1unknownIRQ0, packetlen, leds
     
-    pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]    # get irq
-    
+    # pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]    # get irq
+    pio_interrupt = sm.irq().flags() 
+
     if pio_interrupt & (1 << 3):       
         flagcount += 1   
-        mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET] = (1 << 3)  # clear
+        # mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET] = (1 << 3)  # should auto-clear? 
         # removed the print statements because the slock doesnt like print statements 
           
     else:
@@ -529,13 +530,13 @@ def setupPIO0():
         freq=19200,         # 156 MHz / div = 8125
         set_base=pin_cpu1_pin
     )
-    sm_rxclock.active(0)
-    sm_nrzi.active(0)
-    sm_txclock.active(0)
+    sm_rxclock.active(1)
+    sm_nrzi.active(1)
+    sm_txclock.active(1)
 
     ## pio_enable_sm_mask_in_sync(pio, 0x07) -> syncs the state machine clocks and starts them all at the same time 
     # OFFSET = 0x000                      # 0x07 = 0111 = state machines 0, 1, 2 
-    mem32[PIO0_ADDRESS] = 0x07    # mem32 enables the the state machines 
+    # mem32[PIO0_ADDRESS] = 0x07    # mem32 enables the the state machines 
 
     print("<setupPIO0> End")
 
@@ -615,7 +616,7 @@ def setupPIO1():
     )
 
     # IRQ handler 
-    sm_unstuff.irq(handler=pio_irq_data, hard = True)
+    sm_unstuff.irq(handler=pio_irq_data)
     mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
 
     sm_unstuff.active(1)
@@ -646,7 +647,7 @@ def setupPIO2():
     )
 
       # IRQ handler
-    sm_flag.irq(handler=pio_irq_flag, hard = True)
+    sm_flag.irq(handler=pio_irq_flag)
     sm_flag.put(0x0000007E)
     mem32[PIO2_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
 
@@ -707,3 +708,4 @@ def main():
 
 while True:     # pico runs automatically when powered
     main()
+    
