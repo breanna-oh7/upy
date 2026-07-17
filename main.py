@@ -1,5 +1,6 @@
 # this is a translation of ao27.pio and ao27.c by Michael Wyrick
 # pioasm was used to double check
+import sys 
 from machine import UART
 import _thread
 from machine import Pin, mem32
@@ -25,7 +26,7 @@ from time import sleep_ms, sleep, ticks_us, ticks_diff
 #          pin 0 = Subtract phase       # Signal that we subtracted a phase
 #          pin 1 = add phase            # Signal that we inserted a phase
 # ------------------------------------
-@rp2.asm_pio(sideset_init=[rp2.PIO.OUT_LOW, rp2.PIO.OUT_LOW])
+@rp2.asm_pio(sideset_init=[rp2.PIO.OUT_LOW] * 2)
 def rxclock(): # clcokdiv 8125
     wrap_target()
 
@@ -46,16 +47,6 @@ def rxclock(): # clcokdiv 8125
 
     wrap()
 
-
-@rp2.asm_pio(sideset_init=[rp2.PIO.OUT_LOW, rp2.PIO.OUT_LOW])
-def rxclock_simple():
-    # """Simplified rxclock that just generates IRQ 0 at ~19200 Hz"""
-    wrap_target()
-    irq(0) .side(0)[7] # Generate IRQ 0
-    nop() .side(0)[7] # Wait
-    wrap()
-
-
 # ------------------------------------
 # Generate the TX Clock PLL at the baud rate. 
 #   In Pins: n/a
@@ -65,7 +56,7 @@ def rxclock_simple():
 #   Side pins: 
 # ------------------------------------
 
-@rp2.asm_pio(set_init=[rp2.PIO.OUT_LOW, rp2.PIO.OUT_LOW])
+@rp2.asm_pio(set_init=[rp2.PIO.OUT_LOW] * 2)
 def txclock(): # clcokdiv 8125
     wrap_target()
 
@@ -134,7 +125,7 @@ def nrzi():# clock div 4
 #          pin 0 = data clock
 # ------------------------------------
 
-@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=rp2.PIO.OUT_LOW, autopush=True, push_thresh=8, out_init=rp2.PIO.OUT_LOW)
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=[rp2.PIO.OUT_LOW], autopush=True, push_thresh=8, out_init=rp2.PIO.OUT_LOW)
 def receiveData():
     label("resetall")
     mov(isr, null)                  .side(0)       # clear isr
@@ -211,7 +202,7 @@ def wsled():
 #          pin 0 = high when current bit is the last bit of a valid flag char
 # ------------------------------------
 
-@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=rp2.PIO.OUT_LOW) #side set 1 opt 
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=[rp2.PIO.OUT_LOW]) #side set 1 opt 
 def flag():     # clock div= 4 
     pull(block)                    .side(0)         # Get Flag Value from High level Code
     mov(x, osr)                    .side(0)         # Save it in X forever              
@@ -322,8 +313,7 @@ pin28           =     28
 
 
 pin_pinFromCPU    = Pin(pinFromCPU, Pin.IN, Pin.PULL_UP) 
-pin_pinPLLAdd     = Pin(pinPLLAdd, Pin.OUT)
-pin_pll_sub_pin   = Pin(pinPLLSub, Pin.OUT)       
+    
 pin_sample_pin    = Pin(pinSampleCLK)
 pin_nrzi_pin      = Pin(pinNRZIdecode)
 pin_cpu1_pin      = Pin(pinToCPU1, Pin.OUT)
@@ -361,8 +351,7 @@ pin_pinData       = Pin(pinData)
 # --------------------------------------------------------
 # LED API AND GLOBALS
 # --------------------------------------------------------
-NUMLEDS = 3
-
+## LED STATUS
 LED_NORMAL    =     0x00000000
 LED_ONOFF     =     0x80000000
 LED_BLINK     =     0x40000000
@@ -371,7 +360,7 @@ LED_RESERVED  =     0x10000000
 LED_COUNTDOWN =     0x10000000
 LED_TIMEMASK  =     0x0F000000
 
-
+#LeD TIME
 LED_0_1sec  =  0x01000000
 LED_0_2sec  =  0x02000000
 LED_0_3sec  =  0x03000000
@@ -384,23 +373,25 @@ LED_FAST    =  0x01000000
 
 Brightness = 0.1
 
-def urgb_u32(r, g, b):
+def urgb_u32(effect, r, g, b):
+
     red = int(r * Brightness)
     green = int(g * Brightness)
     blue = int(b * Brightness)
-    return (red << 8) | (green << 16) | blue
+    return ((effect & 0xFF) << 24) | (red << 8) | (green << 16) | blue
 
-LEDOFF = urgb_u32(0x00,0x00,0x00)
-LEDRED  = urgb_u32(0xFF,0x00,0x00)
-LEDGREEN = urgb_u32(0x00,0xFF,0x00)
-LEDBLUE = urgb_u32(0x00,0x00,0xFF)
-LEDCYAN = urgb_u32(0x00,0xFF,0xFF)
-LEDYELLOW = urgb_u32(0xFF,0xFF,0x00)
-LEDMAGENTA = urgb_u32(0xFF,0x00,0xFF)
-LEDWHITE = urgb_u32(0xFF,0xFF,0xFF)
+LEDOFF = urgb_u32(LED_NORMAL, 0x00,0x00,0x00)
+LEDRED  = urgb_u32(LED_NORMAL, 0xFF,0x00,0x00)
+LEDGREEN = urgb_u32(LED_NORMAL, 0x00,0xFF,0x00)
+LEDBLUE = urgb_u32(LED_NORMAL, 0x00,0x00,0xFF)
+LEDCYAN = urgb_u32(LED_NORMAL, 0x00,0xFF,0xFF)
+LEDYELLOW = urgb_u32(LED_NORMAL, 0xFF,0xFF,0x00)
+LEDMAGENTA = urgb_u32(LED_NORMAL, 0xFF,0x00,0xFF)
+LEDWHITE = urgb_u32(LED_NORMAL, 0xFF,0xFF,0xFF)
 
-leds = [LEDOFF] * NUMLEDS
-ledStatus = [LEDOFF] * NUMLEDS
+NUMLEDS = 3
+leds      = [0, 0, 0]
+ledStatus = [0, 0, 0]
 
 sLock = _thread.allocate_lock() # semaphore lock 
 
@@ -502,27 +493,62 @@ def pio_irq_data(sm):
 # FLAG IRQ handler      (PIO2)
 # --------------------------------------------------------
 
-def pio_irq_flag(sm):   # note this is for pio block 2 now 
-    global flagcount, pio1unknownIRQ0, packetlen, leds
+# def pio_irq_flag(sm):   # note this is for pio block 2 now 
+#     global flagcount, pio1unknownIRQ0, packetlen, leds
     
-    # pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]    # get irq
-    pio_interrupt = sm.irq().flags() 
+#     # pio_interrupt = mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET]    # get irq
+#     pio_interrupt = sm.irq().flags() 
 
-    if pio_interrupt & (1 << 3):       
-        flagcount += 1   
-        # clear the irq
-        # mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET] = (1 << 3)  # should auto-clear? 
-        # removed the print statements because the slock doesnt like print statements 
-        with sLock:
-            if packetlen > 2:
-                leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
-            else:
-                leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
+#     if pio_interrupt & (1 << 3):       
+#         flagcount += 1   
+#         # clear the irq
+#         # mem32[PIO2_ADDRESS + PIO_IRQ_OFFSET] = (1 << 3)  # should auto-clear? 
+#         # removed the print statements because the slock doesnt like print statements 
+#         with sLock:
+#             if packetlen > 2:
+#                 leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
+#             else:
+#                 leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
            
-            # print(f"Packet len={packetlen}: ", end="")
-            for i in range(packetlen):
-                print("{:02X} ".format(packet[i]), end="")
-            # if packetlen > 0:  # Only process if we have data
+#             # print(f"Packet len={packetlen}: ", end="")
+#             for i in range(packetlen):
+#                 print("{:02X} ".format(packet[i]), end="")
+#             # if packetlen > 0:  # Only process if we have data
+#             cmd = packet[0]
+#             if cmd == 0x27:
+#                 leds[1] = LEDMAGENTA
+#             elif cmd == 0x9A:
+#                 leds[1] = urgb_u32(0xFF, 0x00, 0x00)  # Red
+#             else:
+#                 leds[1] = LEDYELLOW | LED_BLINK | LED_FAST
+            
+#             print()  # newline
+
+#         packetlen = 0  # Reset
+
+
+#     else:
+#         pio1unknownIRQ0 += 1
+    
+import micropython
+
+# Enable emergency exception buffer for IRQ debugging
+micropython.alloc_emergency_exception_buf(100)
+
+# --------------------------------------------------------
+# Scheduled task to handle packet processing (runs in main context)
+# --------------------------------------------------------
+def process_packet(dummy):
+    # """Called via schedule() from IRQ - handles LED and printing"""
+    global packetlen, packet, leds
+   
+    with sLock:
+        if packetlen > 2:
+            leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
+        else:
+            leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
+
+        if packetlen > 0:
             cmd = packet[0]
             if cmd == 0x27:
                 leds[1] = LEDMAGENTA
@@ -530,26 +556,53 @@ def pio_irq_flag(sm):   # note this is for pio block 2 now
                 leds[1] = urgb_u32(0xFF, 0x00, 0x00)  # Red
             else:
                 leds[1] = LEDYELLOW | LED_BLINK | LED_FAST
-            
-            print()  # newline
 
-        packetlen = 0  # Reset
+    # Print packet (outside lock to avoid blocking)
+    if packetlen > 0:
+        print(f"Packet len={packetlen}: ", end="")
+        for i in range(packetlen):
+            print("{:02X} ".format(packet[i]), end="")
+        print()
 
+# --------------------------------------------------------
+# FLAG IRQ handler (PIO2) - MINIMAL, FAST
+# --------------------------------------------------------
+packet_copy = bytearray(1024)  # Separate buffer for IRQ
 
+def pio_irq_flag(sm):
+    global flagcount, pio1unknownIRQ0, packetlen, packet, packet_copy
+   
+    pio_interrupt = sm.irq().flags()
+   
+    if pio_interrupt & (1 << 3):      
+        flagcount += 1
+       
+        # Make a quick copy of the packet for processing
+        # (Can't do complex operations in IRQ context)
+        for i in range(packetlen):
+            packet_copy[i] = packet[i]
+       
+        # Schedule the actual processing for main thread
+        micropython.schedule(process_packet, None)
+       
+        # Reset packet length AFTER copying
+        packetlen = 0
     else:
         pio1unknownIRQ0 += 1
-    
 
 # -----------------------------------------------------
 # PIO 0 Setup for RX Clock and NRZI (and TX clock)
 # -----------------------------------------------------
 
 def setupPIO0():
+    pin_pinPLLAdd     = Pin(pinPLLAdd, Pin.OUT)
+    pin_pll_sub_pin   = Pin(pinPLLSub, Pin.OUT)   
+
     #intialize the state machines
     sm_rxclock = rp2.StateMachine(
         0, 
-        rxclock_simple, 
-        freq=19200, # 156 MHz / div = 8125
+        rxclock, 
+        freq=307200, # 156 MHz / div = 8125
         in_base=pin_pinFromCPU, 
         sideset_base=pin_pinPLLAdd
     )
@@ -569,15 +622,14 @@ def setupPIO0():
         freq=19200,         # 156 MHz / div = 8125
         set_base=pin_cpu1_pin
     )
+
+
     sm_rxclock.active(1)
     sm_nrzi.active(1)
     sm_txclock.active(1)
 
-    ## pio_enable_sm_mask_in_sync(pio, 0x07) -> syncs the state machine clocks and starts them all at the same time 
-    # OFFSET = 0x000                      # 0x07 = 0111 = state machines 0, 1, 2 
-    # mem32[PIO0_ADDRESS] = 0x07    # mem32 enables the the state machines 
-
     print("<setupPIO0> End")
+
 
 #fuqahh debugging functions (ty claude)
 def quick_pin14_check():
@@ -702,6 +754,248 @@ def check_sm_status():
     sleep_ms(1)
     irq_reg = mem32[PIO0_ADDRESS + PIO_IRQ_OFFSET]
     print(f"PIO0 IRQ after clear and 1ms: {irq_reg:08X}")
+def check_rxclock_running():
+    # """Check if rxclock sideset pins are toggling"""
+    pll_add_pin = Pin(pinPLLAdd, Pin.IN)
+    pll_sub_pin = Pin(pinPLLSub, Pin.IN)
+   
+    samples_add = []
+    samples_sub = []
+   
+    for _ in range(50):
+        samples_add.append(pll_add_pin.value())
+        samples_sub.append(pll_sub_pin.value())
+        sleep_ms(1)
+   
+    add_changes = sum(1 for i in range(1, len(samples_add)) if samples_add[i] != samples_add[i-1])
+    sub_changes = sum(1 for i in range(1, len(samples_sub)) if samples_sub[i] != samples_sub[i-1])
+   
+    print(f"PLL Add pin (GPIO {pinPLLAdd}): {add_changes} transitions")
+    print(f"PLL Sub pin (GPIO {pinPLLSub}): {sub_changes} transitions")
+   
+    if add_changes == 0 and sub_changes == 0:
+        print("rxclock NOT executing (no sideset activity)")
+        return False
+    else:
+        print("rxclock IS executing")
+        return True
+def check_rp2350_pio():
+    # """Check RP2350-specific PIO configuration"""
+    import machine
+   
+    print(f"Machine: {machine.unique_id().hex()}")
+    print(f"Frequency: {machine.freq()}")
+   
+    # RP2350 has 3 PIO blocks (PIO0, PIO1, PIO2) vs RP2040's 2
+    # Check if PIO blocks are powered/clocked
+   
+    # RESETS register (different on RP2350)
+    RESETS_BASE = 0x40020000
+    RESET_OFFSET = 0x0
+    RESET_DONE_OFFSET = 0x8
+   
+    resets = mem32[RESETS_BASE + RESET_OFFSET]
+    resets_done = mem32[RESETS_BASE + RESET_DONE_OFFSET]
+   
+    print(f"RESETS: {resets:08X}")
+    print(f"RESET_DONE: {resets_done:08X}")
+   
+    # Check PIO clocks (bits 13-11 on RP2350)
+    print(f"  PIO0 reset: {bool(resets & (1 << 11))}")
+    print(f"  PIO1 reset: {bool(resets & (1 << 12))}")
+    print(f"  PIO2 reset: {bool(resets & (1 << 13))}")
+def check_sm0_stall():
+    # """Check if SM0 is stalled - RP2350 version"""
+    # RP2350 PIO registers (verify with RP2350 datasheet)
+    # State Machine 0 register offsets from PIO base
+    SM0_CLKDIV = 0x0C8      # Clock divider
+    SM0_EXECCTRL = 0x0CC    # Execution control
+    SM0_SHIFTCTRL = 0x0D0   # Shift control
+    SM0_ADDR = 0x0D4        # Program counter
+    SM0_INSTR = 0x0D8       # Current instruction
+    SM0_PINCTRL = 0x0DC     # Pin control
+   
+    CTRL = 0x000            # PIO control register
+    FSTAT = 0x004           # FIFO status
+    FDEBUG = 0x008          # FIFO debug
+    FLEVEL = 0x00C          # FIFO levels
+   
+    print("\n=== SM0 (rxclock) Debug Info ===")
+   
+    # Read all SM0 registers
+    clkdiv = mem32[PIO0_ADDRESS + SM0_CLKDIV]
+    execctrl = mem32[PIO0_ADDRESS + SM0_EXECCTRL]
+    shiftctrl = mem32[PIO0_ADDRESS + SM0_SHIFTCTRL]
+    addr = mem32[PIO0_ADDRESS + SM0_ADDR]
+    instr = mem32[PIO0_ADDRESS + SM0_INSTR]
+    pinctrl = mem32[PIO0_ADDRESS + SM0_PINCTRL]
+   
+    ctrl = mem32[PIO0_ADDRESS + CTRL]
+    fstat = mem32[PIO0_ADDRESS + FSTAT]
+    fdebug = mem32[PIO0_ADDRESS + FDEBUG]
+   
+    # Decode clock divider (16.8 fixed point)
+    div_int = (clkdiv >> 16) & 0xFFFF
+    div_frac = (clkdiv >> 8) & 0xFF
+    actual_div = div_int + (div_frac / 256.0)
+    target_freq = 156_000_000 / actual_div if actual_div > 0 else 0
+   
+    print(f"CLKDIV: 0x{clkdiv:08X}")
+    print(f"  Integer: {div_int}, Fraction: {div_frac}/256")
+    print(f"  Actual divisor: {actual_div:.3f}")
+    print(f"  Target frequency: {target_freq:.1f} Hz")
+   
+    print(f"\nEXECCTRL: 0x{execctrl:08X}")
+    print(f"  STATUS_SEL: {(execctrl >> 4) & 0xF}")
+    print(f"  WRAP_BOTTOM: {(execctrl >> 7) & 0x1F}")
+    print(f"  WRAP_TOP: {(execctrl >> 12) & 0x1F}")
+    print(f"  SIDE_EN: {bool(execctrl & (1 << 30))}")
+    print(f"  SIDE_PINDIR: {bool(execctrl & (1 << 29))}")
+   
+    print(f"\nSHIFTCTRL: 0x{shiftctrl:08X}")
+    print(f"  AUTOPUSH: {bool(shiftctrl & (1 << 16))}")
+    print(f"  AUTOPULL: {bool(shiftctrl & (1 << 17))}")
+   
+    print(f"\nPINCTRL: 0x{pinctrl:08X}")
+    print(f"  SIDESET_BASE: {(pinctrl >> 26) & 0x1F}")
+    print(f"  SIDESET_COUNT: {(pinctrl >> 29) & 0x7}")
+    print(f"  IN_BASE: {(pinctrl >> 5) & 0x1F}")
+   
+    print(f"\nProgram Counter: 0x{addr:08X} (instruction {addr})")
+    print(f"Current Instruction: 0x{instr:04X}")
+   
+    # Decode the current instruction (basic)
+    opcode = (instr >> 13) & 0x7
+    opcodes = ["JMP", "WAIT", "IN", "OUT", "PUSH", "PULL", "MOV", "IRQ"]
+    print(f"  Opcode: {opcodes[opcode]} (0b{opcode:03b})")
+   
+    # Check FIFO status
+    print(f"\nFSTAT: 0x{fstat:08X}")
+    print(f"  TX FULL (SM0): {bool(fstat & (1 << 0))}")
+    print(f"  RX EMPTY (SM0): {bool(fstat & (1 << 8))}")
+    print(f"  TX FULL (SM1): {bool(fstat & (1 << 1))}")
+    print(f"  RX EMPTY (SM1): {bool(fstat & (1 << 9))}")
+   
+    print(f"\nFDEBUG: 0x{fdebug:08X}")
+    print(f"  TXSTALL (SM0): {bool(fdebug & (1 << 0))}")
+    print(f"  RXSTALL (SM0): {bool(fdebug & (1 << 8))}")
+   
+    # Check if SM is actually enabled
+    print(f"\nCTRL: 0x{ctrl:08X}")
+    print(f"  SM0 ENABLE: {bool(ctrl & (1 << 0))}")
+    print(f"  SM1 ENABLE: {bool(ctrl & (1 << 1))}")
+    print(f"  SM2 ENABLE: {bool(ctrl & (1 << 2))}")
+   
+    # Diagnosis
+    print("\n=== DIAGNOSIS ===")
+    if not (ctrl & (1 << 0)):
+        print("✗ SM0 is NOT ENABLED!")
+    elif actual_div < 1.0:
+        print("✗ Clock divider is invalid (too small)!")
+    elif fdebug & (1 << 0):
+        print("⚠ SM0 is TX stalled (waiting to write)")
+    elif fdebug & (1 << 8):
+        print("⚠ SM0 is RX stalled (waiting to read)")
+    elif addr == 0 and instr == 0:
+        print("✗ SM0 program counter is 0 - not loaded?")
+    else:
+        print("✓ SM0 appears configured correctly")
+        print(f"  Stuck at instruction {addr}: 0x{instr:04X} ({opcodes[opcode]})")
+def check_pio_programs():
+    # """Show what programs are loaded in PIO memory"""
+    print("\n=== PIO0 Instruction Memory ===")
+    INSTR_MEM_BASE = 0x048  # Start of instruction memory
+   
+    for i in range(32):  # PIO has 32 instruction slots
+        instr = mem32[PIO0_ADDRESS + INSTR_MEM_BASE + (i * 4)]
+        if instr != 0:
+            print(f"Addr {i:2d}: 0x{instr:04X}")
+def check_pio2():
+    # """Debug PIO2: SM0=wsled, SM1=flag"""
+    PIO2_BASE = 0x50400000
+    CTRL = 0x000
+    FSTAT = 0x004
+    FDEBUG = 0x008
+    INSTR_MEM_BASE = 0x048
+
+    # Per-SM register block offsets (24 bytes apart, same on RP2040/RP2350)
+    SM_STRIDE = 0x18
+    SM_CLKDIV = 0x0C8
+    SM_EXECCTRL = 0x0CC
+    SM_SHIFTCTRL = 0x0D0
+    SM_ADDR = 0x0D4
+    SM_INSTR = 0x0D8
+    SM_PINCTRL = 0x0DC
+
+    OPCODES = ["JMP", "WAIT", "IN", "OUT", "PUSH/PULL", "MOV", "IRQ", "SET"]
+
+    def decode_instr(instr):
+        opcode = (instr >> 13) & 0x7
+        name = OPCODES[opcode]
+        if opcode == 4:  # PUSH/PULL share opcode 4, bit7 distinguishes
+            name = "PULL" if (instr >> 7) & 1 else "PUSH"
+        return name
+
+    def dump_sm(sm_index):
+        base = PIO2_BASE + SM_CLKDIV + (sm_index * SM_STRIDE)
+        clkdiv = mem32[base]
+        execctrl = mem32[base + (SM_EXECCTRL - SM_CLKDIV)]
+        shiftctrl = mem32[base + (SM_SHIFTCTRL - SM_CLKDIV)]
+        addr = mem32[base + (SM_ADDR - SM_CLKDIV)]
+        instr = mem32[base + (SM_INSTR - SM_CLKDIV)]
+        pinctrl = mem32[base + (SM_PINCTRL - SM_CLKDIV)]
+
+        div_int = (clkdiv >> 16) & 0xFFFF
+        div_frac = (clkdiv >> 8) & 0xFF
+        actual_div = div_int + (div_frac / 256.0)
+        freq = 156_000_000 / actual_div if actual_div > 0 else 0
+
+        # Correct PINCTRL bit layout (confirmed same on RP2040 and RP2350)
+        out_base = pinctrl & 0x1F
+        set_base = (pinctrl >> 5) & 0x1F
+        sideset_base = (pinctrl >> 10) & 0x1F
+        in_base = (pinctrl >> 15) & 0x1F
+        out_count = (pinctrl >> 20) & 0x3F
+        set_count = (pinctrl >> 26) & 0x7
+        sideset_count = (pinctrl >> 29) & 0x7
+
+        print(f"\n--- PIO2 SM{sm_index} ---")
+        print(f"CLKDIV: 0x{clkdiv:08X}  divisor={actual_div:.3f}  freq={freq:.1f}Hz")
+        print(f"EXECCTRL: 0x{execctrl:08X}  SIDE_EN={bool(execctrl & (1<<30))}  SIDE_PINDIR={bool(execctrl & (1<<29))}  JMP_PIN={(execctrl>>24)&0x1F}")
+        print(f"SHIFTCTRL: 0x{shiftctrl:08X}  AUTOPULL={bool(shiftctrl & (1<<17))}  AUTOPUSH={bool(shiftctrl & (1<<16))}")
+        print(f"PINCTRL: 0x{pinctrl:08X}")
+        print(f"  OUT_BASE={out_base}  SET_BASE={set_base}  SIDESET_BASE={sideset_base}  IN_BASE={in_base}")
+        print(f"  OUT_COUNT={out_count}  SET_COUNT={set_count}  SIDESET_COUNT={sideset_count}")
+        print(f"ADDR: {addr}  INSTR: 0x{instr:04X} ({decode_instr(instr)})")
+        return addr, instr
+
+    ctrl = mem32[PIO2_BASE + CTRL]
+    fstat = mem32[PIO2_BASE + FSTAT]
+    fdebug = mem32[PIO2_BASE + FDEBUG]
+    print("=== PIO2 Overview ===")
+    print(f"CTRL: 0x{ctrl:08X}  SM0_EN={bool(ctrl & 1)}  SM1_EN={bool(ctrl & 2)}")
+    print(f"FSTAT: 0x{fstat:08X}  SM0_TXFULL={bool(fstat & 1)}  SM0_RXEMPTY={bool(fstat & (1<<8))}  SM1_TXFULL={bool(fstat & 2)}  SM1_RXEMPTY={bool(fstat & (1<<9))}")
+    print(f"FDEBUG: 0x{fdebug:08X}  SM0_TXSTALL={bool(fdebug & 1)}  SM0_RXSTALL={bool(fdebug & (1<<8))}  SM1_TXSTALL={bool(fdebug & 2)}  SM1_RXSTALL={bool(fdebug & (1<<9))}")
+
+    print("\n=== PIO2 Instruction Memory ===")
+    nonzero = 0
+    for i in range(32):
+        instr = mem32[PIO2_BASE + INSTR_MEM_BASE + (i * 4)]
+        if instr != 0:
+            nonzero += 1
+            print(f"Addr {i:2d}: 0x{instr:04X} ({decode_instr(instr)})")
+    if nonzero == 0:
+        print("NOTHING LOADED — instruction memory is empty!")
+
+    # Sample SM0 and SM1 PC twice, a few ms apart, to see if they're advancing
+    print("\n=== PC advancement check ===")
+    addr0_a, instr0_a = dump_sm(0)
+    addr1_a, instr1_a = dump_sm(1)
+    sleep_ms(5)
+    addr0_b = mem32[PIO2_BASE + SM_ADDR]
+    addr1_b = mem32[PIO2_BASE + SM_ADDR + SM_STRIDE]
+    print(f"\nSM0 addr: {addr0_a} -> {addr0_b}  {'ADVANCING' if addr0_a != addr0_b else 'NOT ADVANCING (or looped back to same spot)'}")
+    print(f"SM1 addr: {addr1_a} -> {addr1_b}  {'ADVANCING' if addr1_a != addr1_b else 'NOT ADVANCING (or looped back to same spot)'}")
 
 def setupPIO1():
     global sm_unstuff
@@ -765,19 +1059,26 @@ def main():
     global flagcount, datacount, pio1unknownIRQ0, packetlen, sm_unstuff
     machine.freq(156000000)
     uart = UART(1, baudrate=9600, bits=8, parity=None, stop=1)
-   
+    print(sys.implementation)
+    print(sys.version)
+    check_rp2350_pio()
     setupPIO0()
-    sleep_ms(100)
+    # sleep_ms(100)
+    # check_rxclock_running()
+    # check_sm0_stall()
+    # check_pio_programs()
+
     mem32[PIO0_ADDRESS + PIO_IRQ_OFFSET] = 0x01
     sleep_ms(10)
-    check_sm_status()
+    # check_sm_status()
     
     # quick_pin14_check()
-    check_nrzi_output()
-    check_rxclock_irq()
+    # check_nrzi_output()
+    # check_rxclock_irq()
 
     setupPIO1()
     setupPIO2()
+    check_pio2()
     print(f"Flags detected: {flagcount}, Data bytes: {datacount}")
     with sLock:
         leds[0] = LEDBLUE | LED_BLINK | LED_0_5sec
@@ -787,38 +1088,7 @@ def main():
     _thread.start_new_thread(Led_Service, ())
 
     while True:
-        # POLL THE FIFO DIRECTLY
-        while sm_unstuff.rx_fifo() > 0:
-            data = sm_unstuff.get()
-            if packetlen < 1024:
-                # packet[packetlen] = (data >> 24) & 0xFF
-                packet[packetlen] = data & 0xFF
-                packetlen += 1
-            datacount += 1
        
-        # with sLock:
-        #     if packetlen > 2:
-        #         leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
-        #     else:
-        #         leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
-           
-        #     if packetlen > 0:  # Only process if we have data
-        #         cmd = packet[0]
-        #         if cmd == 0x27:
-        #             leds[1] = LEDMAGENTA
-        #         elif cmd == 0x9A:
-        #             leds[1] = urgb_u32(0xFF, 0x00, 0x00)  # Red
-        #         else:
-        #             leds[1] = LEDYELLOW | LED_BLINK | LED_FAST
-
-        # Print the packet
-        # if packetlen > 0:
-        #     print(f"Packet len={packetlen}: ", end="")
-        #     for i in range(packetlen):
-        #         print("{:02X} ".format(packet[i]), end="")
-        #     print()  # newline
-       
-        # packetlen = 0  # Reset
         sleep_ms(100)
 
 
