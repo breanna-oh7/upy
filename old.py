@@ -1,13 +1,13 @@
-
 # this is a translation of ao27.pio and ao27.c by Michael Wyrick
 # pioasm was used to double check
-from machine import UART
+
 import _thread
-from machine import Pin, mem32
+from machine import Pin, mem32, UART, Timer
 import machine
 import rp2
-from time import sleep_ms, sleep
-
+from time import sleep_ms, sleep, ticks_us, ticks_diff
+import micropython
+micropython.alloc_emergency_exception_buf(256)
 # ------------------------------------
 #
 #  PIO 0 sm
@@ -26,8 +26,10 @@ from time import sleep_ms, sleep
 #          pin 0 = Subtract phase       # Signal that we subtracted a phase
 #          pin 1 = add phase            # Signal that we inserted a phase
 # ------------------------------------
-@rp2.asm_pio(sideset_init=[rp2.PIO.OUT_LOW, rp2.PIO.OUT_LOW])
+@rp2.asm_pio(sideset_init=[rp2.PIO.OUT_LOW] * 2)
 def rxclock(): # clcokdiv 8125
+    wrap_target()
+
     label("sub")
     nop()                          .side(1)            # delay one clock
     
@@ -43,6 +45,8 @@ def rxclock(): # clcokdiv 8125
     label("extra")        
     jmp("cont")                    .side(2)[2]         # Need to add a clock so delay an extra amount
 
+    wrap()
+
 # ------------------------------------
 # Generate the TX Clock PLL at the baud rate. 
 #   In Pins: n/a
@@ -52,7 +56,7 @@ def rxclock(): # clcokdiv 8125
 #   Side pins: 
 # ------------------------------------
 
-@rp2.asm_pio(set_init=[rp2.PIO.OUT_LOW, rp2.PIO.OUT_LOW])
+@rp2.asm_pio(set_init=[rp2.PIO.OUT_LOW] * 2)
 def txclock(): # clcokdiv 8125
     wrap_target()
 
@@ -78,6 +82,7 @@ def txclock(): # clcokdiv 8125
 
 @rp2.asm_pio(sideset_init=rp2.PIO.OUT_LOW, set_init=rp2.PIO.OUT_LOW)
 def nrzi():# clock div 4 
+    mov(x, null)
     jmp("waiti")
 
     wrap_target()
@@ -111,37 +116,6 @@ def nrzi():# clock div 4
 
 
 # ------------------------------------
-# Wait for Interrupt 1 from previous PIO to signal time to sample
-#   set IRQ 3 when flag is detected
-#   In Pins: NRZI decoded data pin
-#   Out Pins: n/a
-#   Jmp Pin: n/a
-#   Set Pings: n/a
-#   Side pins: 
-#          pin 0 = high when current bit is the last bit of a valid flag char
-# ------------------------------------
-
-@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=rp2.PIO.OUT_LOW) #side set 1 opt 
-def flag():     # clock div= 4 
-    pull(block)                    .side(0)         # Get Flag Value from High level Code
-    mov(x, osr)                    .side(0)         # Save it in X forever              
-
-    wrap_target()
-    label("waiti")
-
-    in_(isr, 8)                                     # put isr back at high bits to prepare for shift
-    irq(4)                  # MIGHT NEED nowait                        # Let unstuffer know we finished
-    word(0x20c9)                                    # 0010000011001001 = wait 1 prev irq 1 word equivalent because upython doesnt have next or prev 
-    # wait(1, irq, 9)
-    in_(pins, 1)                                    # Grab the new bit
-    in_(null, 24)                                   # move it to low byte (shift in 24 zeros)
-    mov(y, isr)                                     # Grab the current shifted value
-    jmp(x_not_y, "waiti")            .side(0)       # Compare to a Flag char
-    irq(3)                           .side(1)       # FLAG was detected
-
-    wrap()
-
-# ------------------------------------
 # Wait for Interrupt Zero Unstuff,  only clock outgoing data if not bit stuffed
 #   In Pins: NRZI decoded data pin
 #   Out Pins: data out
@@ -151,7 +125,7 @@ def flag():     # clock div= 4
 #          pin 0 = data clock
 # ------------------------------------
 
-@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=rp2.PIO.OUT_LOW, autopush=True, push_thresh=8, out_init=rp2.PIO.OUT_LOW)
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=[rp2.PIO.OUT_LOW], autopush=True, push_thresh=8, out_init=rp2.PIO.OUT_LOW)
 def receiveData():
     label("resetall")
     mov(isr, null)                  .side(0)       # clear isr
@@ -162,7 +136,9 @@ def receiveData():
     set(x, 4)                       .side(0)       #  wait for 5 ones in a row
 
     label("next1")
-    wait(1, irq, 4)                 .side(0)[7]    # Wait for flag detector to be done, wait for input to be stable
+    wait(1, irq, 28)                 .side(0)[7]    # Wait for flag detector to be done, wait for input to be stable
+    # waits for flag deteector irq, which is in the next block = wait 1 irq next 4 
+    # # 001 00000 1 10 11100 = 
     jmp(pin, "resetall")            .side(0)       # check if flag pin is set -------- have to set pin when initializing sm
     mov(y, pins)                    .side(0)       # grab the input data
     # mov(pins, y)                    .side(0)       # set the data output to the input
@@ -173,7 +149,9 @@ def receiveData():
     jmp(x_dec, "next1")             .side(1)       # clock out the data but next bit might need to be skipped
 
     label("ones5")
-    wait(1, irq, 4)                 .side(0)[7]    # Wait for flag detector to be done
+    wait(1, irq, 28)                 .side(0)[7]    # Wait for flag detector to be done
+    # waits for flag deteector irq, which is in the next block = wait 1 irq next 4 
+    # # 001 00000 1 10 11100 = 
     jmp(pin, "resetall")            .side(0)       # check if flag pin is set
     mov(y, pins)                    .side(0)       # get input
     # mov(pins, y)                    .side(0)       # put on data line but not clock line
@@ -211,6 +189,41 @@ def wsled():
     nop()                       .side(0)[2]                 
 
     wrap()
+
+
+# ------------------------------------
+# Wait for Interrupt 1 from PIO 0 (next PIO relative to PIO2) to signal time to sample
+#   set IRQ 3 when flag is detected
+#   In Pins: NRZI decoded data pin
+#   Out Pins: n/a
+#   Jmp Pin: n/a
+#   Set Pings: n/a
+#   Side pins: 
+#          pin 0 = high when current bit is the last bit of a valid flag char
+# ------------------------------------
+
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=[rp2.PIO.OUT_LOW]) #side set 1 opt 
+def flag():     # clock div= 4 
+    pull(block)                    .side(0)         # Get Flag Value from High level Code
+    mov(x, osr)                    .side(0)         # Save it in X forever              
+
+    wrap_target()
+    label("waiti")
+
+    in_(isr, 8)                                     # put isr back at high bits to prepare for shift
+    irq(4)                  # MIGHT NEED nowait                        # Let unstuffer know we finished
+    # wait(1, irq, 9)       # word(0x20c9)                                    # 0010000011001001 = wait 1 prev irq 1 word equivalent because upython doesnt have next or prev 
+    wait (1, irq, 25 )      # 001 00000 1 10 11001 = waiting for next, so next would be PIO 0 
+   
+    in_(pins, 1)                                    # Grab the new bit
+    in_(null, 24)                                   # move it to low byte (shift in 24 zeros)
+    mov(y, isr)                                     # Grab the current shifted value
+    jmp(x_not_y, "waiti")            .side(0)       # Compare to a Flag char
+    irq(3)                           .side(1)       # FLAG was detected
+
+    wrap()
+
+
 # ------------------------------------
 # 
 #  
@@ -239,35 +252,35 @@ def wsled():
 #     IRQ 1
   
 #   PIO 1     - python uses index 4 - 7 to set sm in PIO 1 
-#     sm 0    Flag Detector
+#     sm 0    
 #     sm 1    zero unstuffer, receiveData           
 #     sm 2
 #     sm 3
 #     irq 0
 #     irq 1
-#     irq 2  flag detector output ready for unstuff
-#     irq 3  flag detected
+#     irq 2  
+#     irq 3  
 #     irq 4  
 #     irq 5  
 #     irq 6
 #     irq 7
-#     IRQ 0  flag detector
+#     IRQ 0  
 #     IRQ 1  SM 1 Rx Fifo not Empty
 
 #   PIO 2
-#     sm 0
-#     sm 1
+#     sm 0  wsled
+#     sm 1  Flag Detector
 #     sm 2
 #     sm 3
 #     irq 0
 #     irq 1
-#     irq 2
-#     irq 3
-#     irq 4
+#     irq 2 
+#     irq 3 flag detected
+#     irq 4 flag detector output ready for unstuff
 #     irq 5
 #     irq 6
 #     irq 7
-#     IRQ 0
+#     IRQ 0 flag detector
 #     IRQ 1
 # */
 
@@ -298,18 +311,16 @@ pin26           =     26
 pin27           =     27
 pin28           =     28
 
-
-pin_pinFromCPU    = Pin(pinFromCPU, Pin.IN, Pin.PULL_UP) 
-pin_pinPLLAdd     = Pin(pinPLLAdd, Pin.OUT)
-pin_pll_sub_pin   = Pin(pinPLLSub, Pin.OUT)       
-pin_sample_pin    = Pin(pinSampleCLK, Pin.OUT)
-pin_nrzi_pin      = Pin(pinNRZIdecode, Pin.OUT)
+SYSTEM_CLOCK = 156000000
+RXCLK_DIV = 8125
+TXCLK_DIV = 8125
+NRZI_DIV = 4 
+FLAG_DIV = 4  
 pin_cpu1_pin      = Pin(pinToCPU1, Pin.OUT)
 pin_cpu2_pin      = Pin(pinToCPU2, Pin.OUT)
-pin_pinNRZIdecode = Pin(pinNRZIdecode, Pin.IN)
-pin_pinFlag       = Pin(pinFlag, Pin.OUT)
-pin_pinClk        = Pin(pinClk, Pin.OUT)
-pin_pinData       = Pin(pinData, Pin.OUT)
+pin_pinFlag       = Pin(pinFlag)
+pin_pinClk        = Pin(pinClk)
+pin_pinData       = Pin(pinData)
 #-------------------------------------------------------
 #       WS LED
 #-------------------------------------------------------
@@ -337,10 +348,10 @@ pin_pinData       = Pin(pinData, Pin.OUT)
   
 # */
 
-NUMLEDS = 3
-PIO1_BASE       = 0x50300000            # address for PIO1 
-PIO_IRQ_OFFSET  = 0x030
-
+# --------------------------------------------------------
+# LED API AND GLOBALS
+# --------------------------------------------------------
+## LED STATUS
 LED_NORMAL    =     0x00000000
 LED_ONOFF     =     0x80000000
 LED_BLINK     =     0x40000000
@@ -349,7 +360,7 @@ LED_RESERVED  =     0x10000000
 LED_COUNTDOWN =     0x10000000
 LED_TIMEMASK  =     0x0F000000
 
-
+#LeD TIME
 LED_0_1sec  =  0x01000000
 LED_0_2sec  =  0x02000000
 LED_0_3sec  =  0x03000000
@@ -362,259 +373,278 @@ LED_FAST    =  0x01000000
 
 Brightness = 0.1
 
-def urgb_u32(r, g, b):
+def urgb_u32(effect, r, g, b):
+
     red = int(r * Brightness)
     green = int(g * Brightness)
     blue = int(b * Brightness)
-    return (red << 8) | (green << 16) | blue
+    return ((effect & 0xFF) << 24) | (red << 8) | (green << 16) | blue
 
-LEDOFF = urgb_u32(0x00,0x00,0x00)
-LEDRED  = urgb_u32(0xFF,0x00,0x00)
-LEDGREEN = urgb_u32(0x00,0xFF,0x00)
-LEDBLUE = urgb_u32(0x00,0x00,0xFF)
-LEDCYAN = urgb_u32(0x00,0xFF,0xFF)
-LEDYELLOW = urgb_u32(0xFF,0xFF,0x00)
-LEDMAGENTA = urgb_u32(0xFF,0x00,0xFF)
-LEDWHITE = urgb_u32(0xFF,0xFF,0xFF)
+LEDOFF = urgb_u32(LED_NORMAL, 0x00,0x00,0x00)
+LEDRED  = urgb_u32(LED_NORMAL, 0xFF,0x00,0x00)
+LEDGREEN = urgb_u32(LED_NORMAL, 0x00,0xFF,0x00)
+LEDBLUE = urgb_u32(LED_NORMAL, 0x00,0x00,0xFF)
+LEDCYAN = urgb_u32(LED_NORMAL, 0x00,0xFF,0xFF)
+LEDYELLOW = urgb_u32(LED_NORMAL, 0xFF,0xFF,0x00)
+LEDMAGENTA = urgb_u32(LED_NORMAL, 0xFF,0x00,0xFF)
+LEDWHITE = urgb_u32(LED_NORMAL, 0xFF,0xFF,0xFF)
 
-leds = [LEDOFF] * NUMLEDS
-ledStatus = [LEDOFF] * NUMLEDS
+NUMLEDS = 3
+leds      = [0, 0, 0]
+ledStatus = [0, 0, 0]
 
-sLock = _thread.allocate_lock() # semaphore lock 
+# ==========================================================
+#  Packet globals  (pre-allocated - no heap churn in IRQ)
+# ==========================================================
+packet      = bytearray(1024)
+packetlen   = 0
+flagcount   = 0
+datacount   = 0
 
-sm_wsled = None
+_report_buf = bytearray(1024)   # snapshot copied out before print (deferred)
 
-def Led_Service():
-    global leds, ledStatus
-    while True:
-        with sLock:
-            for i in range(NUMLEDS): 
-                led = leds[i]
-                if led & LED_ONOFF:
-                    ledStatus[i] = LEDOFF
-                elif led & (LED_BLINK | LED_ONETIME):
-                    if not (ledStatus[i] & LED_COUNTDOWN):
-                        ledStatus[i] = led | LED_COUNTDOWN
-                    else:
-                        cntDown = ((ledStatus[i] & LED_TIMEMASK) >> 24) - 1
-                        if cntDown == 0:
-                            if led & LED_ONETIME: 
-                                leds[i] &= LED_ONOFF
-                                ledStatus[i] = LEDOFF
-                            if led & LED_BLINK:
-                                if ledStatus[i] & LED_ONOFF:
-                                    ledStatus[i] = led 
-                                else: 
-                                    ledStatus[i] = LEDOFF | LED_ONOFF | LED_COUNTDOWN | (led & LED_TIMEMASK)
+sm_rxclock = None
+sm_nrzi    = None
+sm_txclock = None
+sm_unstuff = None
+sm_wsled   = None
+sm_flag    = None
+
+# ==========================================================
+#  Deferred (soft-irq) reporting - printing must not happen
+#  inside the hard IRQ, so hand it off with micropython.schedule
+# ==========================================================
+def _report_packet(n):
+    s = ""
+    for i in range(n):
+        s += "%02X " % _report_buf[i]
+    print(s)
+
+
+# sLock = _thread.allocate_lock() # semaphore lock 
+
+
+def _led_service(t):
+    for i in range(NUMLEDS):
+        led = leds[i]
+        if led & LED_ONOFF:
+            ledStatus[i] = LEDOFF
+        elif led & (LED_BLINK | LED_ONETIME):
+            if not (ledStatus[i] & LED_COUNTDOWN):
+                ledStatus[i] = led | LED_COUNTDOWN
+            else:
+                cntDown = ((ledStatus[i] & LED_TIMEMASK) >> 24) - 1
+                if cntDown <= 0:
+                    if led & LED_ONETIME:
+                        leds[i] &= LED_ONOFF
+                        ledStatus[i] = LEDOFF
+                    if led & LED_BLINK:
+                        if ledStatus[i] & LED_ONOFF:
+                            ledStatus[i] = led
                         else:
-                            cntDown = (ledStatus[i] & LED_TIMEMASK) >> 24
-                            cntDown -= 1
-                            ledStatus[i] &= ~LED_TIMEMASK
-                            ledStatus[i] |= (cntDown << 24)
+                            ledStatus[i] = LEDOFF | LED_ONOFF | LED_COUNTDOWN | (led & LED_TIMEMASK)
                 else:
-                    ledStatus[i] = led
+                    ledStatus[i] = (ledStatus[i] & ~LED_TIMEMASK) | (cntDown << 24)
+        else:
+            ledStatus[i] = led
 
-            for j in range(NUMLEDS):
-                put_pixel(ledStatus[j])
+    for i in range(NUMLEDS):
+        sm_wsled.put(ledStatus[i] << 8)
             
-        sleep_ms(100)
-            
-
-def put_pixel(pixel_grb):
-
-    global sm_wsled
-    sm_wsled.put((pixel_grb << 8) & 0xFFFFFFFF)
-
-
-# def UpdateLeds():
-#     global leds
-#     for i in range(NUMLEDS):
-#         put_pixel(leds[i])
-
-# ------------------------------------
-# 
-#  
-#  Flag IRQ Handler
-#  
-#         
-# ------------------------------------
-
-flagcount = 0
-datacount = 0
-pio1unknownIRQ0 = 0
-packetlen = 0
-packet = bytearray(1024)
-
-leds = [LEDOFF, LEDOFF, LEDOFF] 
-
-def pio_irq_flag(sm):
-    global flagcount, pio1unknownIRQ0, packetlen, leds
-    
-    pio_interrupt = mem32[PIO1_BASE + PIO_IRQ_OFFSET]
-    
-    if pio_interrupt & (1 << 3):       
-        flagcount += 1   
-        mem32[PIO1_BASE + PIO_IRQ_OFFSET] = (1 << 3)  # clear
-        
-        if packetlen > 0:
-            with sLock:     # have to lock leds bc its a shared resource
-                if packetlen > 2:
-                    leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
-                else:
-                    leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
-                
-                # cant do case; have to do if-elif-else
-                cmd = packet[0]
-                if cmd == 0x27:
-                    leds[1] = LEDMAGENTA
-                elif cmd == 0x9A: 
-                    leds[1] = 0x00FF0000  
-                else:
-                    leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
-
-            for i in range(packetlen):
-                print("{:02X} ".format(packet[i]), end="")
-
-            print() 
-            
-        packetlen = 0            
-    else:
-        pio1unknownIRQ0 += 1
-    
-
-    print("<setupFlag data> End")
 
 # --------------------------------------------------------
-# Data IRQ handler
+# PIOS
+# --------------------------------------------------------
+# globals
+PIO0_ADDRESS = 0x50200000               # base address of PIO0
+PIO1_ADDRESS       = 0x50300000         # address for PIO1 
+PIO2_ADDRESS = 0x50400000
+PIO_IRQ_OFFSET  = 0x030                 # regular irq offset
+PIO_IRQ_INTE = 0x168                    # irq enable
+
+# Page 84 - Interrupts
+# PIO0_IRQ_0 = 15                        
+# PIO0_IRQ_1 = 16
+PIO1_IRQ_0 = 17
+# PIO1_IRQ_1 = 18
+PIO2_IRQ_0 = 19
+# PIO2_IRQ_1 = 20
+
+PIO_HARD_IRQ0 = 0x170                   # IRQ0_INTE (Interrupt Enable for irq0)
+PIO_HARD_IRQ1 = 0x17c                   # IRQ1_INTE (Interrupt Enable for irq1)
+NVIC_ISER0 = 0xE000E100                 # NVIC ISER0 
+NVIC_ISER1 = 0x0e104
+FSTAT = 0x004           # page 947
+
+
+# --------------------------------------------------------
+# Data IRQ handler      (PIO1)
 # --------------------------------------------------------
 def pio_irq_data(sm):
     global datacount, packetlen, packet
     # byte = sm.rx_fifo()
-
     while sm.rx_fifo() > 0:                                     # while (!pio_sm_is_rx_fifo_empty(pio, sm_data))
     # for _ in range(byte):
         data = sm.get()
-        if packetlen < 1024:
+        if packetlen < len(packet):
             packet[packetlen] = (data >> 24) & 0xFF             # packet[packetlen++] = data >> 24;
+            # packet[packetlen] = data & 0xFF
             packetlen += 1
         datacount += 1
+
+    # mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] = 0xFF     # clear irq offset MIGHT CHECK; this is 
     
-    print("<setupPIRQ data> End")
+# --------------------------------------------------------
+# FLAG IRQ handler      (PIO2)
+# --------------------------------------------------------
+
+def pio_irq_flag(sm):
+    global flagcount, packetlen
+
+    flagcount += 1
+
+    if packetlen > 0:
+        if packetlen > 2:
+            leds[2] = LEDGREEN | LED_ONETIME | LED_FAST
+        else:
+            leds[2] = LEDRED | LED_ONETIME | LED_0_5sec
+
+        b0 = packet[0]
+        if b0 == 0x27:
+            leds[1] = LEDMAGENTA
+        elif b0 == 0x9A:
+            leds[1] = 0x00030000
+        else:
+            leds[1] = 0x000F0F00 | LED_BLINK | LED_FAST
+
+        n = packetlen
+        for i in range(n):
+            _report_buf[i] = packet[i]
+        micropython.schedule(_report_packet, n)
+
+    packetlen = 0
 
 # -----------------------------------------------------
 # PIO 0 Setup for RX Clock and NRZI (and TX clock)
 # -----------------------------------------------------
 
 def setupPIO0():
+    global sm_rxclock, sm_nrzi, sm_txclock
+    
+    pin_pll_sub_pin   = Pin(pinPLLSub, Pin.OUT)   
+
     #intialize the state machines
     sm_rxclock = rp2.StateMachine(
         0, 
         rxclock, 
-        freq=19200, # 156 MHz / div = 8125
-        in_base=pin_pinFromCPU, 
-        sideset_base=pin_pinPLLAdd
+        freq=       int(SYSTEM_CLOCK / RXCLK_DIV), # 156 MHz / div = 8125
+        in_base=    Pin(pinFromCPU, Pin.IN, Pin.PULL_UP), 
+        sideset_base= Pin(pinPLLAdd, Pin.OUT),      # pinPLLAdd, PinPLLSub
     )
 
     sm_nrzi = rp2.StateMachine(
         1, 
         nrzi, 
-        freq=39000000, 
-        in_base=pin_pinFromCPU, 
-        sideset_base=pin_sample_pin, 
-        set_base=pin_nrzi_pin
+        freq=int(SYSTEM_CLOCK / NRZI_DIV), 
+        in_base=        Pin(pinFromCPU, Pin.IN, Pin.PULL_UP), 
+        sideset_base=   Pin(pinSampleCLK, Pin.OUT), 
+        set_base=       Pin(pinNRZIdecode, Pin.OUT),
     )
 
     sm_txclock = rp2.StateMachine(
         2, 
         txclock, 
-        freq=19200,         # 156 MHz / div = 8125
-        set_base=pin_cpu1_pin
+        freq=               int(SYSTEM_CLOCK / TXCLK_DIV),         # 156 MHz / div = 8125
+        set_base=           Pin(pinToCPU1, Pin.OUT),  
     )
-    sm_rxclock.active(0)
-    sm_nrzi.active(0)
-    sm_txclock.active(0)
 
-    ## pio_enable_sm_mask_in_sync(pio, 0x07) -> syncs the state machine clocks and starts them all at the same time 
-    PIO0_ADDRESS = 0x50200000              # base address of PIO0
-    # OFFSET = 0x000                      # 0x07 = 0111 = state machines 0, 1, 2 
-    mem32[PIO0_ADDRESS] = 0x07    # mem32 enables the the state machines 
+
+    sm_rxclock.active(1)
+    sm_nrzi.active(1)
+    sm_txclock.active(1)
 
     print("<setupPIO0> End")
 
-
 def setupPIO1():
-    PIO1_ADDRESS = 0x50300000
-    PIO_HARD_IRQ0 = 0x170  # IRQ0_INTE (Interrupt Enable for irq0)
-    PIO_HARD_IRQ1 = 0x17c  # IRQ1_INTE (Interrupt Enable for irq1)
-
-
-    sm_flag = rp2.StateMachine(
-        4,
-        flag,
-        freq = 39000000,
-        in_base = pin_pinNRZIdecode,
-        sideset_base = pin_pinFlag
-    )
-    # IRQ handler
-    sm_flag.irq(handler=pio_irq_flag)
+    global sm_unstuff
 
     sm_unstuff = rp2.StateMachine(
-        5,
-        receiveData,
-        freq = 39000000,
-        in_base = pin_pinNRZIdecode,
-        sideset_base = pin_pinClk,
-        jmp_pin = pin_pinFlag,
-        out_base = pin_pinData
+        5, receiveData,                             # PIO1 slot 1  (base id4 + 1)
+        freq=int(SYSTEM_CLOCK / NRZI_DIV),
+        in_base=Pin(pinNRZIdecode, Pin.IN),
+        sideset_base=Pin(pinClk, Pin.OUT),
+        out_base=Pin(pinData, Pin.OUT),
+        jmp_pin=Pin(pinFlag, Pin.IN),
     )
+
     # IRQ handler 
-    sm_unstuff.irq(handler=pio_irq_data)
-    sm_flag.active(0)
-    sm_unstuff.active(0)
-    mem32[PIO1_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
-    mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
+    sm_unstuff.irq(handler=pio_irq_data, hard = True)
+    # sm_unstuff.irq(lambda p: pio_irq_data(sm_unstuff)) ## lambda p used to set hardware irqs
+    # mem32[PIO1_ADDRESS + PIO_HARD_IRQ1] |= (1<<1)   # bit 1 is SM1 RX FIFO NOT EMPTY
 
-    sm_flag.put(0x0000007E)
+    sm_unstuff.active(1)
 
-    mem32[PIO1_ADDRESS] = 0x03  # enable state machines
-    
+    # mem32[PIO1_ADDRESS] = 0x02  # enable state machines
+    # mem32[NVIC_ISER0] = (1 << PIO1_IRQ_1)
     print("<setupPIO1> End")
 
-def setupPIO2():
-    global sm_wsled
-    pin_pinWSLed = Pin(pinWSLed, Pin.OUT)
+def setupPIO2(): 
+    global sm_wsled, sm_flag
+
     sm_wsled = rp2.StateMachine(
         8,
         wsled,
         freq=8210526, # clock div 19, maybe round up if not working since its a decimal
-        sideset_base=pin_pinWSLed
+        sideset_base=Pin(pinWSLed, Pin.OUT)
     )
 
+    sm_flag = rp2.StateMachine(
+        11,
+        flag,
+        freq = int (SYSTEM_CLOCK / FLAG_DIV),
+        in_base=Pin(pinNRZIdecode, Pin.IN),
+        sideset_base=Pin(pinFlag, Pin.OUT),
+    )
+    sm_flag.put(0x0000007E)
+    # IRQ handler
+    sm_flag.irq(handler=pio_irq_flag, hard = True)
+    
+    # mem32[PIO2_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
+
+    sm_flag.active(1)
     sm_wsled.active(1)
 
+    # mem32[NVIC_ISER0] = (1 << PIO2_IRQ_0)
+    # print(f"SM5 RX fifo depth: {sm_unstuff.rx_fifo()}")
+    # print(f"PIO1 FSTAT: {mem32[PIO1_ADDRESS + FSTAT]:08X}")
     print("<setupPIO2> End")
 
 #dobule check that that the definitions match the rp2
-
 def main():
-
-    machine.freq(156000000) # in hertz
-    uart = UART(1, baudrate = 9600, bits = 8, parity = None, stop = 1)
+    machine.freq(SYSTEM_CLOCK)
+    uart = UART(1, baudrate=9600, bits=8, parity=None, stop=1)
+    print("AO-27 Bench CPU  (RP2350 / MicroPython)")
 
     setupPIO0()
     setupPIO1()
     setupPIO2()
 
-    with sLock:
-        leds[0] = LEDBLUE | LED_BLINK | LED_0_5sec
-        leds[1] = LEDOFF
-        leds[2] = LEDOFF
+    leds[0] = LEDBLUE | LED_BLINK | LED_0_5sec
+    leds[1] = LEDOFF
+    leds[2] = LEDOFF
 
-    _thread.start_new_thread(Led_Service, ())   # running the Led_Service function in the second core
+    Timer().init(mode=Timer.PERIODIC, period=100, callback=_led_service)        # can ignore this error i guess? 
 
+    # Nothing polled here - packet capture (pio_irq_data), flag processing
+    # (pio_irq_flag) and LED updates (_led_timer_cb) are all IRQ-driven.
     while True:
-        sleep_ms(1000)
-       
+        machine.lightsleep(1000)
 
-while True:     # pico runs automatically when powered
+while __name__  == "__main__":
     main()
+ 
+
+ # magenta lights flashing on the LED thats supposed to have a consistent blue blinking (LED 0), and its supposed to be flashing on LED[1] which is the middle, but its overtaken by a BLUE LED that briefly flashes a dim magenta 
+ # data not being printed
+ # led behavior supposed  to be: LED[0] (closest to the wires on the wsled) = blue blinking when program is one, led[1] = magenta, consistent, led[2] = green blinking , sometimes red
+ # led behavior on this is : LED[0] = yellow sometimes blinking blue, led[1] = consistnet blue, led[2] = blinking magenta 
