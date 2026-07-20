@@ -114,6 +114,39 @@ def nrzi():# clock div 4
 #
 #-------------------------------------------
 
+# ------------------------------------
+# Wait for Interrupt 1 from PIO 0 (next PIO relative to PIO2) to signal time to sample
+#   set IRQ 3 when flag is detected
+#   In Pins: NRZI decoded data pin
+#   Out Pins: n/a
+#   Jmp Pin: n/a
+#   Set Pings: n/a
+#   Side pins: 
+#          pin 0 = high when current bit is the last bit of a valid flag char
+# ------------------------------------
+
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=[rp2.PIO.OUT_LOW]) #side set 1 opt 
+def flag():     # clock div= 4 
+    pull(block)                    .side(0)         # Get Flag Value from High level Code
+    mov(x, osr)                    .side(0)         # Save it in X forever              
+
+    wrap_target()
+    label("waiti")
+
+    in_(isr, 8)                                     # put isr back at high bits to prepare for shift
+    irq(4)                  # MIGHT NEED nowait                        # Let unstuffer know we finished
+    wait(1, irq, 9)       # word(0x20c9)                                    # 0010000011001001 = wait 1 prev irq 1 word equivalent because upython doesnt have next or prev 
+    # wait (1, irq, 25 )      # 001 00000 1 10 11001 = waiting for next, so next would be PIO 0 
+   
+    in_(pins, 1)                                    # Grab the new bit
+    in_(null, 24)                                   # move it to low byte (shift in 24 zeros)
+    mov(y, isr)                                     # Grab the current shifted value
+    jmp(x_not_y, "waiti")            .side(0)       # Compare to a Flag char
+    irq(3)                           .side(1)       # FLAG was detected
+
+    wrap()
+
+
 
 # ------------------------------------
 # Wait for Interrupt Zero Unstuff,  only clock outgoing data if not bit stuffed
@@ -136,7 +169,7 @@ def receiveData():
     set(x, 4)                       .side(0)       #  wait for 5 ones in a row
 
     label("next1")
-    wait(1, irq, 28)                 .side(0)[7]    # Wait for flag detector to be done, wait for input to be stable
+    wait(1, irq, 4)                 .side(0)[7]    # Wait for flag detector to be done, wait for input to be stable
     # waits for flag deteector irq, which is in the next block = wait 1 irq next 4 
     # # 001 00000 1 10 11100 = 
     jmp(pin, "resetall")            .side(0)       # check if flag pin is set -------- have to set pin when initializing sm
@@ -149,7 +182,7 @@ def receiveData():
     jmp(x_dec, "next1")             .side(1)       # clock out the data but next bit might need to be skipped
 
     label("ones5")
-    wait(1, irq, 28)                 .side(0)[7]    # Wait for flag detector to be done
+    wait(1, irq, 4)                 .side(0)[7]    # Wait for flag detector to be done
     # waits for flag deteector irq, which is in the next block = wait 1 irq next 4 
     # # 001 00000 1 10 11100 = 
     jmp(pin, "resetall")            .side(0)       # check if flag pin is set
@@ -192,39 +225,6 @@ def wsled():
 
 
 # ------------------------------------
-# Wait for Interrupt 1 from PIO 0 (next PIO relative to PIO2) to signal time to sample
-#   set IRQ 3 when flag is detected
-#   In Pins: NRZI decoded data pin
-#   Out Pins: n/a
-#   Jmp Pin: n/a
-#   Set Pings: n/a
-#   Side pins: 
-#          pin 0 = high when current bit is the last bit of a valid flag char
-# ------------------------------------
-
-@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_init=[rp2.PIO.OUT_LOW]) #side set 1 opt 
-def flag():     # clock div= 4 
-    pull(block)                    .side(0)         # Get Flag Value from High level Code
-    mov(x, osr)                    .side(0)         # Save it in X forever              
-
-    wrap_target()
-    label("waiti")
-
-    in_(isr, 8)                                     # put isr back at high bits to prepare for shift
-    irq(4)                  # MIGHT NEED nowait                        # Let unstuffer know we finished
-    # wait(1, irq, 9)       # word(0x20c9)                                    # 0010000011001001 = wait 1 prev irq 1 word equivalent because upython doesnt have next or prev 
-    wait (1, irq, 25 )      # 001 00000 1 10 11001 = waiting for next, so next would be PIO 0 
-   
-    in_(pins, 1)                                    # Grab the new bit
-    in_(null, 24)                                   # move it to low byte (shift in 24 zeros)
-    mov(y, isr)                                     # Grab the current shifted value
-    jmp(x_not_y, "waiti")            .side(0)       # Compare to a Flag char
-    irq(3)                           .side(1)       # FLAG was detected
-
-    wrap()
-
-
-# ------------------------------------
 # 
 #  
 #  End of PIO #
@@ -252,35 +252,35 @@ def flag():     # clock div= 4
 #     IRQ 1
   
 #   PIO 1     - python uses index 4 - 7 to set sm in PIO 1 
-#     sm 0    
+#     sm 0    flag detector
 #     sm 1    zero unstuffer, receiveData           
 #     sm 2
 #     sm 3
 #     irq 0
 #     irq 1
 #     irq 2  
-#     irq 3  
-#     irq 4  
+#     irq 3 flag detected
+#     irq 4 flag detector output ready for unstuff
 #     irq 5  
 #     irq 6
 #     irq 7
-#     IRQ 0  
+#     IRQ 0  flag detector
 #     IRQ 1  SM 1 Rx Fifo not Empty
 
 #   PIO 2
 #     sm 0  wsled
-#     sm 1  Flag Detector
+#     sm 1  
 #     sm 2
 #     sm 3
 #     irq 0
 #     irq 1
 #     irq 2 
-#     irq 3 flag detected
-#     irq 4 flag detector output ready for unstuff
+#     irq 3 
+#     irq 4 
 #     irq 5
 #     irq 6
 #     irq 7
-#     IRQ 0 flag detector
+#     IRQ 0 
 #     IRQ 1
 # */
 
@@ -371,7 +371,7 @@ LED_1_5sec  =  0x0F000000
 LED_1_6sec  =  0x00000000
 LED_FAST    =  0x01000000
 
-Brightness = 0.1
+Brightness = 0.05
 
 def urgb_u32(effect, r, g, b):
 
@@ -566,7 +566,6 @@ def setupPIO0():
         set_base=           Pin(pinToCPU1, Pin.OUT),  
     )
 
-
     sm_rxclock.active(1)
     sm_nrzi.active(1)
     sm_txclock.active(1)
@@ -574,10 +573,24 @@ def setupPIO0():
     print("<setupPIO0> End")
 
 def setupPIO1():
-    global sm_unstuff
+    global sm_unstuff, sm_flag
+
+    sm_flag = rp2.StateMachine(
+        7,
+        flag,
+        freq = int (SYSTEM_CLOCK / FLAG_DIV),
+        in_base=Pin(pinNRZIdecode, Pin.IN),
+        sideset_base=Pin(pinFlag, Pin.OUT),
+    )
+    sm_flag.put(0x0000007E)
+    # IRQ handler
+    sm_flag.irq(handler=pio_irq_flag, hard = True)
+    sm_flag.active(1)
+    # mem32[PIO2_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
 
     sm_unstuff = rp2.StateMachine(
-        5, receiveData,                             # PIO1 slot 1  (base id4 + 1)
+        5, 
+        receiveData,                             # PIO1 slot 1  (base id4 + 1)
         freq=int(SYSTEM_CLOCK / NRZI_DIV),
         in_base=Pin(pinNRZIdecode, Pin.IN),
         sideset_base=Pin(pinClk, Pin.OUT),
@@ -597,7 +610,7 @@ def setupPIO1():
     print("<setupPIO1> End")
 
 def setupPIO2(): 
-    global sm_wsled, sm_flag
+    global sm_wsled
 
     sm_wsled = rp2.StateMachine(
         8,
@@ -606,20 +619,7 @@ def setupPIO2():
         sideset_base=Pin(pinWSLed, Pin.OUT)
     )
 
-    sm_flag = rp2.StateMachine(
-        11,
-        flag,
-        freq = int (SYSTEM_CLOCK / FLAG_DIV),
-        in_base=Pin(pinNRZIdecode, Pin.IN),
-        sideset_base=Pin(pinFlag, Pin.OUT),
-    )
-    sm_flag.put(0x0000007E)
-    # IRQ handler
-    sm_flag.irq(handler=pio_irq_flag, hard = True)
-    
-    # mem32[PIO2_ADDRESS + PIO_HARD_IRQ0] |= (1<<11)  # bit 11 is irq(3); when irq(3) = 1, the hard IRQ0 of sm 1  = 1 
 
-    sm_flag.active(1)
     sm_wsled.active(1)
 
     # mem32[NVIC_ISER0] = (1 << PIO2_IRQ_0)
